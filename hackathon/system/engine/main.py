@@ -11,6 +11,7 @@ from context import Ctx, Decision  # noqa: E402
 from rules import ESCALATION_RULES, rule_listed_party, listed_decision, D  # noqa: E402
 from closers import CLOSE_RULES  # noqa: E402
 from rfi import rule_rfi  # noqa: E402
+from guards import check_close  # noqa: E402
 
 VERDICT_CODES = {
     "CLOSE": {"COLLECTION_DOCUMENTED", "BUSINESS_RECORDS_RECONCILE", "DOCUMENTED_EVENT", "INVOICE_MATCHES",
@@ -96,7 +97,9 @@ def main(argv):
     for case in inst.cases:
         try:
             c = Ctx(inst, case)
-            d = sanitize(c, decide(c))
+            d = decide(c)
+            d = check_close(c, d) or d
+            d = sanitize(c, d)
         except Exception:  # never drop a case
             if debug:
                 traceback.print_exc()

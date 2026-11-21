@@ -11,6 +11,7 @@ system/
   engine/rules.py     escalation rules and the internal-list (TM22) logic
   engine/closers.py   rules that close a case when documents explain it
   engine/rfi.py       requests for information when the activity is plausible but undocumented
+  engine/guards.py    last checks that can block any close
 ```
 
 ## Order of decisions
@@ -47,7 +48,16 @@ Each case is one customer, or at the payments firm one held payment. The case ge
    - **Own accounts:** an account counts as the customer's own only when a statement on file shows they hold it. If the TM01 multiple is 5 times the declared income or volume or more, the verdict is RFI_UPDATED_PROFILE, as the policy says.
    - **Earlier reviews:** they are cited as context and never treated as covering new or larger activity. Cash paid back in after a reviewed withdrawal closes only when the bank's own records show a withdrawal of exactly the same amount.
    - **Payments abroad on someone else's behalf** (a relative's hospital bill): the money must go to the payee the bill names (otherwise ESC_INVOICE_MISMATCH); it must be the only payment to that payee or that higher-risk country (otherwise ESC_HIGH_RISK_CORRIDOR); no third party may have paid the customer a similar sum in the week before (otherwise ESC_THIRD_PARTY_FUNDING); and the beneficiary must share the customer's surname (otherwise RFI_PURPOSE_DOCUMENTS, asking for proof of the relationship). A beneficiary with the customer's own full name is allowed, since a parent can share both names.
-4. **Otherwise RFI.** The engine asks for the one document that would settle the case, such as the solicitor's letter for an estate payment, the booking for a group trip, the loan agreement and invoice for a car, or a statement for an own-name account. The reason says exactly what to ask for.
+4. **Last checks before any close** (`engine/guards.py`). A close that passes its own rule is still blocked if:
+   - the customer matches an internal list entry on name and date of birth (escalate);
+   - at the payments firm, a held payment of £10,000 or more to someone other than the client has no invoice or contract on file showing that amount (RFI, as the policy requires);
+   - a statement, loan, policy, invoice or receipt relied on is made out to someone other than the customer, or a sale receipt shows the customer as the buyer (RFI);
+   - a third party whose payment is relied on is not named in any of the documents (RFI);
+   - an individual sends the explained money straight on within a week to someone unexplained (RFI, or escalate if it goes to a higher-risk country);
+   - a document relied on is dated after the case was opened (RFI).
+
+   No guard fires on the development cases. Each one was tested by planting its trap in a real closed case and confirming the close is blocked.
+5. **Otherwise RFI.** The engine asks for the one document that would settle the case, such as the solicitor's letter for an estate payment, the booking for a group trip, the loan agreement and invoice for a car, or a statement for an own-name account. The reason says exactly what to ask for.
 
 Whatever happens, every case gets a line. If a rule fails unexpectedly the case becomes an RFI, never a silent omission.
 

@@ -598,7 +598,7 @@ def rule_third_party(c):
     if fac:
         lender = re.search(r"with ([A-Z][\w ]+? Ltd)", fac[0].text)
         lender = lender.group(1) if lender else None
-        pays = [t for t in ins if lender and norm(cp(t)) == norm(lender)] or ins
+        pays = [t for t in ins if lender and norm(cp(t)) == norm(lender)]
         r_ok = [d for d in rem if any(doc_amount_match(d, t) for t in pays)]
         if pays and (r_ok or not rem):
             reason = ("The %s from %s on %s is an invoice finance advance: agreement %s says %s advances 85%% "

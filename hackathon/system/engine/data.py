@@ -160,9 +160,12 @@ class Institution:
     def _read_evidence(self, meta):
         """A document's text. Only files inside the institution folder are read."""
         rel = meta.get("file") or ("evidence/%s.md" % meta["doc_id"])
-        path = os.path.realpath(os.path.join(self.folder, rel))
+        # Check the path as written, without following links: block absolute paths and "../"
+        # escapes, but still read an evidence folder that is a link to the real files.
+        base = os.path.normpath(os.path.abspath(self.folder))
+        path = os.path.normpath(os.path.join(base, rel))
         try:
-            inside = os.path.commonpath([path, self.root]) == self.root
+            inside = not os.path.isabs(rel) and os.path.commonpath([path, base]) == base
         except ValueError:
             inside = False
         if not inside:

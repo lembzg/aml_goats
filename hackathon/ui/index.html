@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alert Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: top bar, queue on the left, case file on the right. Decision first, evidence below. */
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --ink: #18212c;
+  --muted: #5b6774;
+  --faint: #8a95a1;
+  --rule: #e0e4e9;
+  --hover: #eef1f4;
+  --accent: #1d4a73;
+  --accent-soft: #e6edf4;
+  --close: #2c6a3e;
+  --close-soft: #e7f1ea;
+  --rfi: #8a5a00;
+  --rfi-soft: #f6eedd;
+  --esc: #a1271f;
+  --esc-soft: #f7e6e4;
+  --font: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12171d; --surface: #181f27; --ink: #e4e8ed; --muted: #9aa6b2; --faint: #6f7b87;
+    --rule: #2a333d; --hover: #1f2731; --accent: #8db4d9; --accent-soft: #1e2c3a;
+    --close: #7cc08e; --close-soft: #1b2b21; --rfi: #d9ad5c; --rfi-soft: #2d2617;
+    --esc: #e58a82; --esc-soft: #321d1c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12171d; --surface: #181f27; --ink: #e4e8ed; --muted: #9aa6b2; --faint: #6f7b87;
+  --rule: #2a333d; --hover: #1f2731; --accent: #8db4d9; --accent-soft: #1e2c3a;
+  --close: #7cc08e; --close-soft: #1b2b21; --rfi: #d9ad5c; --rfi-soft: #2d2617;
+  --esc: #e58a82; --esc-soft: #321d1c; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--font);
+  font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+}
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+
+.app { display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); height: 100%; }
+
+/* Top bar */
+.top {
+  display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+  padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--rule);
+}
+.brand { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+.tabs { display: flex; gap: 2px; background: var(--bg); padding: 3px; border-radius: 7px; max-width: 100%; overflow-x: auto; }
+.tab { white-space: nowrap; }
+.tab {
+  border: 0; background: transparent; padding: 5px 12px; border-radius: 5px; cursor: pointer;
+  color: var(--muted); font-weight: 500;
+}
+.tab[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--rule); }
+.totals { margin-left: auto; display: flex; align-items: center; gap: 16px; color: var(--muted); }
+.totals b { color: var(--ink); font-weight: 600; }
+.mix { display: flex; width: 160px; height: 6px; border-radius: 3px; overflow: hidden; gap: 2px; }
+.mix span { display: block; height: 100%; }
+
+/* Body panes */
+.panes { display: grid; grid-template-columns: 360px minmax(0, 1fr); min-height: 0; }
+.queue { display: grid; grid-template-rows: auto 1fr; min-height: 0; border-right: 1px solid var(--rule); background: var(--surface); }
+.filters { display: grid; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--rule); }
+.filters input, .filters select {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--bg);
+}
+.filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.count { color: var(--faint); font-size: 13px; }
+.list { overflow-y: auto; min-height: 0; }
+.row {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 16px;
+  border-bottom: 1px solid var(--rule); cursor: pointer; width: 100%; text-align: left;
+  background: transparent; border-left: 0; border-right: 0; border-top: 0;
+}
+.row:hover { background: var(--hover); }
+.row[aria-current="true"] { background: var(--accent-soft); }
+.row .id { font-weight: 500; }
+.row .who { color: var(--muted); grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .rules { color: var(--faint); font-size: 12.5px; grid-column: 2; text-align: right; }
+
+.verdict { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; white-space: nowrap; }
+.verdict::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.v-CLOSE { color: var(--close); }
+.v-RFI { color: var(--rfi); }
+.v-ESCALATE { color: var(--esc); }
+.v-MISSING { color: var(--faint); }
+
+/* Case file */
+.case { overflow-y: auto; min-height: 0; }
+.case-inner { max-width: 1040px; padding: 24px 32px 64px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
+.case-inner > * { min-width: 0; }
+.empty { color: var(--muted); padding: 48px 32px; }
+.head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 20px; }
+.head h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.015em; }
+.head .sub { color: var(--muted); }
+
+.decision { border-radius: 8px; padding: 18px 20px; display: grid; gap: 10px; }
+.decision.CLOSE { background: var(--close-soft); }
+.decision.RFI { background: var(--rfi-soft); }
+.decision.ESCALATE { background: var(--esc-soft); }
+.decision .line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.decision .verdict { font-size: 16px; font-weight: 600; }
+.decision .code { color: var(--muted); }
+.decision p { margin: 0; max-width: 78ch; }
+.evidence { display: flex; flex-wrap: wrap; gap: 6px; }
+.ref {
+  border: 1px solid var(--rule); background: var(--surface); border-radius: 5px; padding: 2px 8px;
+  font-size: 12.5px; cursor: pointer; color: var(--ink);
+}
+.ref:hover { border-color: var(--accent); color: var(--accent); }
+
+section h2 { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
+section h2 .n { color: var(--faint); font-weight: 400; margin-left: 6px; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 28px; margin: 0; }
+.facts div { min-width: 0; }
+.facts dt { color: var(--muted); font-size: 12.5px; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+
+.alert { padding: 12px 0; border-top: 1px solid var(--rule); display: grid; gap: 4px; }
+.alert:first-of-type { border-top: 0; padding-top: 0; }
+.alert .name { font-weight: 500; }
+.alert .rid { color: var(--muted); font-weight: 400; margin-right: 8px; }
+.alert p { margin: 0; color: var(--muted); max-width: 90ch; }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; background: var(--bg); position: sticky; top: 0; }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+td.when { white-space: nowrap; color: var(--muted); }
+td.tid { white-space: nowrap; }
+tr.cited td { background: var(--accent-soft); }
+tr.flash td { animation: flash 1.2s ease-out; }
+@keyframes flash { from { background: var(--rfi-soft); } }
+.tag { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.tag.on { color: var(--accent); font-weight: 500; }
+.toggle { margin-top: 8px; border: 0; background: none; color: var(--accent); padding: 0; cursor: pointer; }
+
+.doc { border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+.doc + .doc { margin-top: 8px; }
+.doc summary { display: flex; gap: 12px; align-items: baseline; padding: 10px 14px; cursor: pointer; list-style: none; }
+.doc summary::-webkit-details-marker { display: none; }
+.doc summary .t { font-weight: 500; }
+.doc summary .meta { color: var(--muted); font-size: 13px; }
+.doc summary .tag { margin-left: auto; }
+.doc[open] summary { border-bottom: 1px solid var(--rule); }
+.doc .body { padding: 12px 14px 14px; display: grid; gap: 8px; max-width: 88ch; }
+.doc .body p { margin: 0; }
+.doc .body dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 0; }
+.doc .body dt { color: var(--muted); }
+.doc .body dd { margin: 0; }
+.doc.flash { animation: flash 1.2s ease-out; }
+
+.note { padding: 10px 0; border-top: 1px solid var(--rule); }
+.note:first-of-type { border-top: 0; padding-top: 0; }
+.note .meta { color: var(--muted); font-size: 13px; }
+.note.cited .meta { color: var(--accent); }
+
+.err { color: var(--esc); padding: 32px; }
+@media (max-width: 860px) {
+  .top { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); gap: 12px; }
+  .totals { flex-wrap: wrap; gap: 6px 12px; }
+  .mix { width: 100%; }
+  .panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: 40vh minmax(0, 1fr); }
+  .queue, .case { min-width: 0; }
+  .queue { border-right: 0; border-bottom: 1px solid var(--rule); }
+  .case-inner { padding: 20px 16px 48px; }
+  .totals { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">Alert review</div>
+    <div class="tabs" role="tablist" id="tabs"></div>
+    <div class="totals" id="totals"></div>
+  </header>
+  <div class="panes">
+    <aside class="queue" aria-label="Case queue">
+      <div class="filters">
+        <input id="q" type="search" placeholder="Search case ID, customer or reason code" aria-label="Search cases">
+        <div class="filter-row">
+          <select id="fv" aria-label="Filter by verdict">
+            <option value="">All verdicts</option>
+            <option value="CLOSE">Close</option>
+            <option value="RFI">Request information</option>
+            <option value="ESCALATE">Escalate</option>
+          </select>
+          <select id="fr" aria-label="Filter by rule"><option value="">All rules</option></select>
+        </div>
+        <div class="count" id="count"></div>
+      </div>
+      <div class="list" id="list" role="listbox" aria-label="Cases"></div>
+    </aside>
+    <main class="case" id="case"><div class="empty">Select a case to review its decision and evidence.</div></main>
+  </div>
+</div>
+
+<script>
+const VERDICT = { CLOSE: "Close", RFI: "Request information", ESCALATE: "Escalate", MISSING: "No decision" };
+const RULES = {
+  TM01: "Activity exceeds the expected profile", TM02: "Rapid movement of funds",
+  TM03: "Repeated transactions below a threshold", TM04: "Many-to-one or one-to-many payments",
+  TM05: "Large or unexpected cash", TM06: "Unexpected higher-risk corridor", TM07: "Dormant account reactivation",
+  TM08: "Third-party funding or payout", TM10: "Unusually early fund redemption", TM22: "Counterparty on an internal list"
+};
+const state = { insts: [], inst: null, rows: [], view: [], current: null, data: null };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const gbp = (n) => n == null ? "" : "£" + Number(n).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const dateFmt = (s) => {
+  if (!s) return "";
+  const d = new Date(s.length <= 10 ? s + "T00:00:00Z" : s);
+  return isNaN(d) ? s : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+};
+const verdictHtml = (v) => `<span class="verdict v-${esc(v)}">${esc(VERDICT[v] || v)}</span>`;
+const words = (code) => (code || "").replace(/^(RFI|ESC)_/, "").toLowerCase().replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+async function get(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Request failed: " + r.status);
+  return r.json();
+}
+
+function readHash() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  const [inst, id] = h.split("/");
+  return { inst, id };
+}
+
+async function init() {
+  try {
+    state.insts = await get("/api/institutions");
+  } catch (e) {
+    $("case").innerHTML = `<div class="err">The workbench server is not running. Start it with: python3 ui/serve.py</div>`;
+    return;
+  }
+  const { inst, id } = readHash();
+  $("tabs").innerHTML = state.insts.map((i) =>
+    `<button class="tab" role="tab" data-k="${esc(i.key)}" aria-selected="false">${esc(i.name)}</button>`).join("");
+  $("tabs").addEventListener("click", (e) => { const b = e.target.closest(".tab"); if (b) selectInst(b.dataset.k); });
+  ["q", "fv", "fr"].forEach((x) => $(x).addEventListener("input", applyFilters));
+  $("list").addEventListener("click", (e) => { const r = e.target.closest(".row"); if (r) openCase(r.dataset.id); });
+  $("list").addEventListener("keydown", moveSelection);
+  window.addEventListener("hashchange", () => {
+    const h = readHash();
+    if (h.inst && h.inst !== state.inst) selectInst(h.inst, h.id);
+    else if (h.id && h.id !== state.current) openCase(h.id, true);
+  });
+  await selectInst(state.insts.some((i) => i.key === inst) ? inst : state.insts[0].key, id);
+}
+
+async function selectInst(key, openId) {
+  state.inst = key;
+  document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.k === key)));
+  state.rows = await get("/api/cases?inst=" + encodeURIComponent(key));
+  const rules = [...new Set(state.rows.flatMap((r) => r.rules))].sort();
+  $("fr").innerHTML = `<option value="">All rules</option>` +
+    rules.map((r) => `<option value="${esc(r)}">${esc(r)}: ${esc(RULES[r] || r)}</option>`).join("");
+  renderTotals();
+  applyFilters();
+  openCase(openId && state.rows.some((r) => r.case_id === openId) ? openId : (state.view[0] || {}).case_id);
+}
+
+function renderTotals() {
+  const c = { CLOSE: 0, RFI: 0, ESCALATE: 0 };
+  state.rows.forEach((r) => { if (r.verdict in c) c[r.verdict]++; });
+  const n = state.rows.length || 1;
+  $("totals").innerHTML =
+    `<span><b>${state.rows.length}</b> cases</span>` +
+    `<span class="v-CLOSE">${c.CLOSE} closed</span><span class="v-RFI">${c.RFI} requests</span><span class="v-ESCALATE">${c.ESCALATE} escalated</span>` +
+    `<span class="mix" aria-hidden="true">` +
+    `<span style="width:${c.CLOSE / n * 100}%;background:var(--close)"></span>` +
+    `<span style="width:${c.RFI / n * 100}%;background:var(--rfi)"></span>` +
+    `<span style="width:${c.ESCALATE / n * 100}%;background:var(--esc)"></span></span>`;
+}
+
+function applyFilters() {
+  const q = $("q").value.trim().toLowerCase(), v = $("fv").value, rule = $("fr").value;
+  state.view = state.rows.filter((r) =>
+    (!v || r.verdict === v) && (!rule || r.rules.includes(rule)) &&
+    (!q || (r.case_id + " " + r.customer + " " + r.reason_code).toLowerCase().includes(q)));
+  $("count").textContent = state.view.length === state.rows.length
+    ? `${state.rows.length} cases` : `${state.view.length} of ${state.rows.length} cases`;
+  $("list").innerHTML = state.view.map((r) =>
+    `<button class="row" role="option" data-id="${esc(r.case_id)}" aria-current="${r.case_id === state.current}">
+       <span class="id">${esc(r.case_id)}</span>${verdictHtml(r.verdict)}
+       <span class="who">${esc(r.customer)}</span><span class="rules">${esc(r.rules.join(", "))}</span>
+     </button>`).join("") || `<div class="empty">No cases match these filters.</div>`;
+}
+
+function moveSelection(e) {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  const i = state.view.findIndex((r) => r.case_id === state.current);
+  const next = state.view[Math.max(0, Math.min(state.view.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)))];
+  if (next) { openCase(next.case_id); const el = $("list").querySelector(`[data-id="${CSS.escape(next.case_id)}"]`); el && el.focus(); }
+}
+
+async function openCase(id, fromHash) {
+  if (!id) { $("case").innerHTML = `<div class="empty">No cases in this institution.</div>`; return; }
+  state.current = id;
+  document.querySelectorAll(".row").forEach((r) => r.setAttribute("aria-current", String(r.dataset.id === id)));
+  if (!fromHash) history.replaceState(null, "", "#" + state.inst + "/" + id);
+  try {
+    state.data = await get(`/api/case?inst=${encodeURIComponent(state.inst)}&id=${encodeURIComponent(id)}`);
+  } catch (e) { $("case").innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  renderCase();
+  $("case").scrollTop = 0;
+}
+
+function renderMarkdown(text) {
+  const lines = text.split("\n").filter((l) => !/^# /.test(l) && !/^\*\*Document ID:\*\*/.test(l));
+  let html = "", dl = [], table = [], para = [];
+  const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  const flush = () => {
+    if (dl.length) { html += "<dl>" + dl.map(([k, v]) => `<dt>${inline(k)}</dt><dd>${inline(v)}</dd>`).join("") + "</dl>"; dl = []; }
+    if (para.length) { html += `<p>${inline(para.join(" "))}</p>`; para = []; }
+    if (table.length) {
+      const rows = table.filter((r) => !/^\|\s*:?-{2,}/.test(r)).map((r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
+      const [h, ...b] = rows;
+      html += `<div class="table-wrap"><table><thead><tr>${h.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>` +
+        b.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("") + "</tbody></table></div>";
+      table = [];
+    }
+  };
+  for (const raw of lines) {
+    const l = raw.trim();
+    const kv = l.match(/^\*\*([^*]+?):\*\*\s*(.*)$/);
+    if (!l) { flush(); continue; }
+    if (l.startsWith("|")) { if (dl.length || para.length) { const t = table; table = []; flush(); table = t; } table.push(l); continue; }
+    if (table.length) flush();
+    if (kv) { if (para.length) { const d = dl; dl = []; flush(); dl = d; } dl.push([kv[1], kv[2]]); continue; }
+    if (dl.length) flush();
+    para.push(l.replace(/^#+\s*/, "").replace(/^[-*]\s+/, ""));
+  }
+  flush();
+  return html;
+}
+
+function renderCase() {
+  const d = state.data, c = d.case, cu = d.customer, dec = d.decision || { verdict: "MISSING", evidence: [] };
+  const dcl = cu.declared || {};
+  const ev = new Set(dec.evidence || []);
+  const txs = d.transactions;
+  const shown = txs.filter((t) => t.alerted || t.cited || t.held);
+  const rest = txs.length - shown.length;
+  const income = dcl.monthly_income_gbp != null ? gbp(dcl.monthly_income_gbp) + " a month"
+    : dcl.annual_turnover_gbp != null ? gbp(dcl.annual_turnover_gbp) + " a year" : "Not declared";
+
+  const txRows = (list) => list.map((t) => `
+    <tr id="tx-${esc(t.transaction_id)}" class="${t.cited ? "cited" : ""}">
+      <td class="when">${esc(dateFmt(t.booked_at))}</td>
+      <td class="tid">${esc(t.transaction_id)}</td>
+      <td>${t.direction === "in" ? "In" : "Out"}</td>
+      <td>${esc((t.channel || "").replace(/_/g, " "))}</td>
+      <td>${esc(t.counterparty_name || (t.location || ""))}${t.counterparty_country && t.counterparty_country !== "United Kingdom" ? `<div class="tag">${esc(t.counterparty_country)}</div>` : ""}</td>
+      <td>${esc(t.reference || "")}</td>
+      <td class="num">${t.direction === "out" ? "−" : ""}${esc(gbp(t.amount_gbp))}</td>
+      <td>${[t.cited ? `<span class="tag on">Relied on</span>` : "", t.held ? `<span class="tag on">Held payment</span>` : "", t.alerted ? `<span class="tag">Alerted</span>` : ""].filter(Boolean).join("<br>")}</td>
+    </tr>`).join("");
+
+  $("case").innerHTML = `<div class="case-inner">
+    <div class="head">
+      <h1>${esc(c.case_id)}</h1>
+      <span class="sub">${esc(cu.name || "")}, review window ${esc(dateFmt(c.review_window?.from))} to ${esc(dateFmt(c.review_window?.to))}</span>
+    </div>
+
+    <div class="decision ${esc(dec.verdict)}">
+      <div class="line">${verdictHtml(dec.verdict)}<span class="code">${esc(words(dec.reason_code))}</span></div>
+      <p>${esc(dec.reason || "The system has not written a decision for this case.")}</p>
+      ${ev.size ? `<div class="evidence" aria-label="Evidence relied on">${[...ev].map((e) => `<button class="ref" data-ref="${esc(e)}">${esc(e)}</button>`).join("")}</div>` : ""}
+    </div>
+
+    <section>
+      <h2>Alerts<span class="n">${d.alerts.length}</span></h2>
+      ${d.alerts.map((a) => `<div class="alert"><div class="name"><span class="rid">${esc(a.rule_id)}</span>${esc(a.rule_name)}</div><p>${esc(a.message)}</p></div>`).join("")}
+    </section>
+
+    <section>
+      <h2>Customer</h2>
+      <dl class="facts">
+        <div><dt>Name</dt><dd>${esc(cu.name)}</dd></div>
+        <div><dt>${cu.kind === "business" ? "Business" : "Occupation"}</dt><dd>${esc(cu.business_activity || cu.occupation || "")}</dd></div>
+        <div><dt>Declared ${cu.kind === "business" ? "turnover" : "income"}</dt><dd>${esc(income)}</dd></div>
+        <div><dt>Source of funds</dt><dd>${esc(dcl.source_of_funds || "")}</dd></div>
+        <div><dt>Expected countries</dt><dd>${esc((dcl.expected_countries || []).join(", "))}</dd></div>
+        <div><dt>Risk rating</dt><dd>${esc(cu.risk_rating || "")}</dd></div>
+        <div><dt>Customer since</dt><dd>${esc(dateFmt(cu.onboarded_on))}</dd></div>
+        <div><dt>Customer ID</dt><dd>${esc(cu.customer_id)}</dd></div>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Transactions<span class="n">${shown.length} alerted or relied on${rest ? `, ${rest} more in the window` : ""}</span></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th>ID</th><th>Direction</th><th>Channel</th><th>Counterparty</th><th>Reference</th><th class="num">Amount</th><th>Status</th></tr></thead>
+        <tbody id="txbody">${txRows(shown)}</tbody>
+      </table></div>
+      ${rest ? `<button class="toggle" id="showall">Show all ${txs.length} transactions</button>` : ""}
+    </section>
+
+    <section>
+      <h2>Documents on file<span class="n">${d.documents.length}</span></h2>
+      ${d.documents.map((doc) => `
+        <details class="doc" id="doc-${esc(doc.doc_id)}" ${doc.cited ? "open" : ""}>
+          <summary><span class="t">${esc(doc.title || doc.doc_id)}</span><span class="meta">${esc(doc.doc_id)}, ${esc(dateFmt(doc.dated))}</span>${doc.cited ? `<span class="tag on">Relied on</span>` : ""}</summary>
+          <div class="body">${renderMarkdown(doc.text || "")}</div>
+        </details>`).join("") || `<p class="tag">No documents on file.</p>`}
+    </section>
+
+    ${d.listed.length ? `<section><h2>Internal list</h2>${d.listed.map((e) => `
+      <div class="note ${e.cited ? "cited" : ""}" id="ref-${esc(e.entry_id)}">
+        <div><strong>${esc(e.name)}</strong>, entry ${esc(e.entry_id)}</div>
+        <div class="meta">${e.date_of_birth ? "Born " + esc(dateFmt(e.date_of_birth)) + ". " : ""}${esc(e.address || "")}</div>
+        <div>${esc(e.reason)}</div></div>`).join("")}</section>` : ""}
+
+    ${d.reviews.length ? `<section><h2>Earlier reviews<span class="n">${d.reviews.length}</span></h2>${d.reviews.map((r) => `
+      <div class="note ${r.cited ? "cited" : ""}" id="ref-${esc(r.review_id)}">
+        <div class="meta">${esc(r.review_id)}, ${esc(r.rule_id)}, ${esc(dateFmt(r.reviewed_on))}${r.cited ? ", relied on" : ""}</div>
+        <div>${esc(r.note)}</div></div>`).join("")}</section>` : ""}
+  </div>`;
+
+  const all = $("showall");
+  if (all) all.addEventListener("click", () => { $("txbody").innerHTML = txRows(txs); all.remove(); });
+  $("case").querySelectorAll(".ref").forEach((b) => b.addEventListener("click", () => jumpTo(b.dataset.ref)));
+}
+
+function jumpTo(ref) {
+  let el = document.getElementById("doc-" + ref) || document.getElementById("ref-" + ref) || document.getElementById("tx-" + ref);
+  if (!el && $("showall")) { $("showall").click(); el = document.getElementById("tx-" + ref); }
+  if (!el) return;
+  if (el.tagName === "DETAILS") el.open = true;
+  el.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+  el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+}
+
+init();
+</script>
+</body>
+</html>

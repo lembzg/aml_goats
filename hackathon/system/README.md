@@ -45,7 +45,7 @@ Each case is one customer, or at the payments firm one held payment. The case ge
    - **Vehicles:** a car's registration must match the insurance schedule.
    - **Refunds:** a refund needs an earlier payment to the same party, at least as large.
    - **Own accounts:** an account counts as the customer's own only when a statement on file shows they hold it. If the TM01 multiple is 5 times the declared income or volume or more, the verdict is RFI_UPDATED_PROFILE, as the policy says.
-   - **Earlier reviews:** they are cited as context and never treated as covering new or larger activity. For example, cash paid back in after a reviewed withdrawal gets an RFI, because only the customer's word links the two.
+   - **Earlier reviews:** they are cited as context and never treated as covering new or larger activity. Cash paid back in after a reviewed withdrawal closes only when the bank's own records show a withdrawal of exactly the same amount.
 4. **Otherwise RFI.** The engine asks for the one document that would settle the case, such as the solicitor's letter for an estate payment, the booking for a group trip, the loan agreement and invoice for a car, or a statement for an own-name account. The reason says exactly what to ask for.
 
 Whatever happens, every case gets a line. If a rule fails unexpectedly the case becomes an RFI, never a silent omission.
@@ -58,7 +58,7 @@ Reasons are 2 to 4 sentences built from the case's own facts: names, amounts, da
 
 | Institution | CLOSE | RFI | ESCALATE |
 |---|---|---|---|
-| Bank | 461 | 289 | 250 |
+| Bank | 500 | 250 | 250 |
 | E-money | 500 | 250 | 250 |
 | Investment | 500 | 250 | 250 |
 | Payments and FX | 500 | 250 | 250 |

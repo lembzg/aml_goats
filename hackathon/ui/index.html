@@ -56,7 +56,7 @@ kbd { font: 12px var(--font); }
 .v-RFI::before { background: transparent; border: 1px solid currentColor; }
 .v-ESCALATE::before { border-radius: 0; transform: rotate(45deg); }
 .v-MISSING { color: var(--muted); }
-.case { overflow-y: auto; min-height: 0; min-width: 0; }
+.case { --muted: var(--ink); overflow-y: auto; min-height: 0; min-width: 0; }
 .case-inner { width: 100%; max-width: 1120px; margin: 0 auto; padding: 32px 44px 64px; }
 .case-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px; }
 .case-navigation { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
@@ -65,16 +65,16 @@ kbd { font: 12px var(--font); }
 .nav-button:hover:not(:disabled) { border-color: #151515; }
 .nav-button:disabled { color: #777; border-color: #e8e8e8; cursor: default; }
 .head { padding-bottom: 24px; margin-bottom: 0; }
-.head h1 { margin: 0 0 10px; font-size: var(--title); font-weight: 600; line-height: 1.2; overflow-wrap: anywhere; }
+.head h1 { margin: 0 0 10px; font-size: var(--title); font-weight: 400; line-height: 1.2; overflow-wrap: anywhere; }
 .head .sub { color: var(--muted); font-size: var(--text); }
 .head .sub span + span::before { content: "/"; margin: 0 12px; color: #b0b0b0; }
-.decision { padding-bottom: 28px; }
+.decision { padding-top: 24px; }
 .decision-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
 .decision .line { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 15px; }
 .decision .verdict { padding: 0; background: transparent; color: var(--ink); font-size: var(--text); }
 .decision.RFI .verdict { background: transparent; color: var(--ink); }
 .decision .code { font-size: var(--text); color: var(--muted); }
-.decision p { margin: 0; max-width: 76ch; font-size: var(--text); line-height: 1.75; color: #343434; }
+.decision p { margin: 0; max-width: 76ch; font-size: var(--text); line-height: 1.75; color: inherit; }
 .evidence-block { margin-top: 23px; }
 .evidence-label { font: 600 12px var(--font); color: var(--muted); margin-bottom: 10px; }
 .evidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
@@ -96,7 +96,7 @@ kbd { font: 12px var(--font); }
 .facts dd { margin: 0; font-size: var(--text); overflow-wrap: anywhere; }
 .alert { padding: 14px 0; border-top: 1px solid var(--rule); }
 .alert:first-child { border: 0; padding-top: 0; }
-.alert .name { font-weight: 600; font-size: var(--text); }
+.alert .name { font-weight: 400; font-size: var(--text); }
 .alert .rid { font: 12px var(--font); margin-right: 12px; color: var(--muted); }
 .alert p { margin: 7px 0 0; color: var(--muted); font-size: var(--text); max-width: 85ch; }
 .table-wrap { overflow-x: auto; max-width: 100%; }
@@ -157,9 +157,9 @@ tr.cited td { background: #f8f8f8; }
   .head .sub span { display: block; }
   .head .sub span + span::before { content: none; }
 }
-.review-panel { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 22px 0; margin-bottom: 26px; }
+.review-panel { margin: 0; padding: 0; }
 .review-heading { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; justify-content: space-between; }
-.review-heading label { font-weight: 600; }
+.review-heading h2 { margin: 0; }
 .review-heading select { background: #fff; border: 1px solid #d5d5d5; border-radius: 4px; padding: 9px 32px 9px 12px; font-size: var(--text); min-width: 190px; }
 .review-state { font-size: var(--small); color: var(--muted); margin: 8px 0 0; }
 .review-note { font-size: var(--text); margin: 16px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -168,7 +168,7 @@ tr.cited td { background: #f8f8f8; }
 .review-edit label { display: block; margin-bottom: 8px; font-size: var(--text); }
 .review-edit textarea { display: block; width: 100%; resize: vertical; min-height: 86px; padding: 12px; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: var(--text); }
 .review-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
-.primary-button { background: #151515; color: #fff; border: 1px solid #151515; border-radius: 4px; padding: 9px 16px; font-size: var(--text); font-weight: 600; }
+.primary-button { background: #151515; color: #fff; border: 1px solid #151515; border-radius: 4px; padding: 9px 16px; font-size: var(--text); font-weight: 400; }
 .primary-button:disabled { opacity: .6; cursor: wait; }
 .text-button { padding: 0; border: 0; background: transparent; border-bottom: 1px solid #ccc; font-size: var(--small); color: var(--muted); }
 .review-error { color: var(--ink); font-size: var(--small); margin-top: 12px; }
@@ -178,6 +178,16 @@ tr.cited td { background: #f8f8f8; }
  .review-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
  .review-heading select { width: 100%; }
 }
+.case-section { border-top: 1px solid var(--rule); padding: 28px 0; }
+.case-section > h2, .review-heading h2 { font-size: var(--text); font-weight: 600; line-height: 1.5; margin: 0 0 20px; }
+.review-heading h2 { margin-bottom: 0; }
+.case b, .case strong { font-weight: 400; }
+.case .ref { font-size: var(--text); }
+.case .ref-id, .case .ref-action { font-size: var(--small); }
+.recommendation-label { display: block; margin: 0 0 10px; font-size: var(--text); }
+.case-section > .dossier:first-of-type { border-top: 0; }
+.case-section > .dossier:last-child { border-bottom: 0; }
+.case .nav-button:disabled { color: inherit; opacity: .45; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; scroll-behavior: auto !important; } }</style>
 </head>
 <body>
@@ -432,7 +442,7 @@ function reviewPanel(data) {
   const review = caseReview(data.institution, data.case.case_id);
   const selected = review?.verdict || data.decision?.verdict || "";
   return `<section class="review-panel" aria-label="Analyst decision">
-    <div class="review-heading"><label for="analyst-verdict">Case decision</label>
+    <div class="review-heading"><h2 id="decision-title"><label for="analyst-verdict">Decision</label></h2>
       <select id="analyst-verdict" ${reviewLoadError ? "disabled" : ""}>
         <option value="" disabled ${!selected ? "selected" : ""}>Choose a decision</option>
         ${["CLOSE", "RFI", "ESCALATE"].map((v) => `<option value="${v}" ${selected === v ? "selected" : ""}>${esc(VERDICT[v])}</option>`).join("")}
@@ -524,14 +534,22 @@ function renderCase() {
       <div class="sub"><span>${cu.kind === "business" ? "Business account" : "Personal account"}</span><span>Review period: ${esc(dateFmt(c.review_window?.from))} to ${esc(dateFmt(c.review_window?.to))}</span></div>
     </div>
 
-    ${reviewPanel(d)}
-    <div class="decision ${esc(dec.verdict)}">
-      <div class="decision-heading"><span class="eyebrow">System recommendation</span></div>
-      <div class="line">${verdictHtml(dec.verdict)}<span class="code">${esc(words(dec.reason_code))}</span></div>
-      <p>${esc(dec.reason || "The system has not written a decision for this case.")}</p>
-      ${ev.size ? `<div class="evidence-block"><div class="evidence-label">Evidence used for this decision</div><div class="evidence" aria-label="Evidence relied on">${[...ev].map((e) => evidenceLink(e, d)).join("")}</div></div>` : ""}
-    </div>
+    <section class="case-section" aria-labelledby="decision-title">
+      ${reviewPanel(d)}
+      <div class="decision ${esc(dec.verdict)}">
+        <div class="recommendation-label">System recommendation</div>
+        <div class="line">${verdictHtml(dec.verdict)}<span class="code">${esc(words(dec.reason_code))}</span></div>
+        <p>${esc(dec.reason || "The system has not written a decision for this case.")}</p>
+      </div>
+    </section>
 
+    <section class="case-section" aria-labelledby="evidence-title">
+      <h2 id="evidence-title">Evidence</h2>
+      ${ev.size ? `<div class="evidence" aria-label="Evidence relied on">${[...ev].map((e) => evidenceLink(e, d)).join("")}</div>` : `<p>No evidence references recorded.</p>`}
+    </section>
+
+    <section class="case-section" aria-labelledby="details-title">
+      <h2 id="details-title">Case details</h2>
     <details class="dossier" open>
       <summary>Why this was flagged<span class="n">${d.alerts.length}</span></summary>
       <div class="section-body">
@@ -587,6 +605,7 @@ function renderCase() {
       <div class="note ${r.cited ? "cited" : ""}" id="ref-${esc(r.review_id)}">
         <div class="meta">${esc(r.review_id)}, ${esc(r.rule_id)}, ${esc(dateFmt(r.reviewed_on))}${r.cited ? ", relied on" : ""}</div>
         <div>${esc(r.note)}</div></div>`).join("")}</div></details>` : ""}
+    </section>
   </div>`;
 
   bindReviewEditor(d);

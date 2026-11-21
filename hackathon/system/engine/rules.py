@@ -366,8 +366,7 @@ def listed_decision(c, res):
 def rule_family_corridor(c):
     if "TM06" not in c.rules:
         return None
-    chat = c.chat_text()
-    if "family" not in chat:
+    if c.docs_of(*EXPLAINING_DOCS):
         return None
     hr = c.high_risk_countries()
     outs = [t for t in c.a_out() if (t.get("counterparty_country") or "").lower() in hr]
@@ -377,13 +376,14 @@ def rule_family_corridor(c):
     if len(outs) < 2 or len(ins) < 2:
         return None
     ctry = outs[0].get("counterparty_country")
-    ch = [d for d in c.chats() if "family" in d.low]
+    ch = c.chats()
     reason = ("%s was paid in by %d unrelated people (%s) and sent on within days to %d different "
-              "recipients in %s, %s in total in near-identical amounts of %s. %s, a higher-risk country "
-              "the customer never declared; the only explanation, in %s, is that it helps family there, "
-              "with no names or documents." % (
+              "recipients in %s, %s in total in amounts of about %s each. %s is a higher-risk country "
+              "the customer never declared, and nothing on file explains the payments%s." % (
                   fmt_gbp(total(ins)), len(ins), join_names([cp(t) for t in ins]), len(outs), ctry,
-                  fmt_gbp(total(outs)), fmt_gbp(amt(outs[0])), ctry, ch[0].id if ch else "the chat"))
+                  fmt_gbp(total(outs)), fmt_gbp(amt(outs[0])), ctry,
+                  (": the only explanation, in %s, is general family support with no names or documents" % ch[0].id)
+                  if ch else ""))
     return D("ESCALATE", "ESC_HIGH_RISK_CORRIDOR", reason,
              [d.id for d in ch] + tids(ins) + tids(outs), "family_corridor")
 
@@ -536,6 +536,111 @@ def rule_payment_file_addresses(c):
     return None
 
 
+
+
+# ---------------------------------------------------------------------
+# Pattern-based checks. These look only at the money and the documents,
+# so they still work when a customer's chat is worded differently.
+# ---------------------------------------------------------------------
+
+EXPLAINING_DOCS = ("hospital_invoice", "invoice", "supplier_invoice", "supplier_invoices", "supply_contract",
+                   "venue_email", "credit_note", "booking_confirmation", "gift_letter", "bank_statement",
+                   "employment_contract", "customer_letter", "contract_schedule", "payment_file")
+COMPANY_RE = re.compile(r"\b(ltd|limited|llp|plc|bank|council|trust|school|university|fund)\b", re.I)
+
+
+def _person(name):
+    return bool(name) and not COMPANY_RE.search(name)
+
+
+def rule_mule_pattern(c):
+    """Many unrelated people pay in and it goes straight out in repeated payments to one
+    company plus cash machine withdrawals."""
+    if c.docs_of("booking_confirmation", "cash_collection_reports", "cash_reconciliation", "takings_book"):
+        return None
+    payers = [t for t in c.a_in() if _person(t.get("counterparty_name"))
+              and not c.is_own_name(t.get("counterparty_name"))]
+    if len({cp(t) for t in payers}) < 5:
+        return None
+    outs = [t for t in c.a_out() if t.get("channel") not in ("direct_debit", "standing_order", "card")]
+    by = {}
+    for t in outs:
+        if t.get("channel") != "cash_withdrawal":
+            by.setdefault(cp(t), []).append(t)
+    if not by:
+        return None
+    dest, dtx = max(by.items(), key=lambda kv: (len(kv[1]), total(kv[1])))
+    atm = [t for t in outs if t.get("channel") == "cash_withdrawal"]
+    if len(dtx) < 3 or total(dtx) + total(atm) < 0.6 * total(payers):
+        return None
+    reason = ("%d unrelated people paid %s into the account in small amounts and within hours it was sent on "
+              "in %d payments to %s (%s) and %d cash machine withdrawals. Nothing on file explains why these "
+              "people are paying the customer, and the in-and-straight-out pattern is typical of an account "
+              "used to receive and pass on other people's money." % (
+                  len({cp(t) for t in payers}), fmt_gbp(total(payers)), len(dtx), dest, fmt_gbp(total(dtx)),
+                  len(atm)))
+    ev = [d.id for d in c.docs_of("sending_bank_fraud_report")] + [d.id for d in c.chats()]
+    return D("ESCALATE", "ESC_MULE_ACTIVITY", reason, ev + tids(payers, 4) + tids(dtx, 3), "mule_pattern")
+
+
+def rule_investment_third_party_pattern(c):
+    """Investment platform: money from several unrelated people, or redemptions paid to someone else."""
+    if c.inst.name != "investment" and "TM08" not in c.rules:
+        return None
+    if c.docs_of(*EXPLAINING_DOCS) or c.docs_of("completion_statement", "insurer_letter", "redundancy_letter"):
+        return None
+    ins = [t for t in c.a_in() if _person(t.get("counterparty_name")) and not c.is_own_name(t.get("counterparty_name"))
+           and not str(t.get("channel") or "").startswith("fund_")]
+    third_out = [t for t in c.a_out() if not c.is_own_name(t.get("counterparty_name"))
+                 and not str(t.get("channel") or "").startswith("fund_")]
+    red = [t for t in c.atx if t.get("channel") == "fund_redemption"]
+    ch = c.chats()
+    if "TM10" in c.rules and red and third_out:
+        reason = ("Fund units bought with money from %s were sold back within days and the %s proceeds were paid "
+                  "to %s, not to the customer. Nothing on file explains why someone else receives the proceeds, "
+                  "which is how fund purchases and early redemptions are used to move other people's money." % (
+                      join_names([cp(t) for t in ins]) or "a third party", fmt_gbp(total(red)),
+                      join_names([cp(t) for t in third_out])))
+        return D("ESCALATE", "ESC_EARLY_REDEMPTION", reason,
+                 [d.id for d in ch] + tids(ins) + tids(red) + tids(third_out), "early_redemption_pattern")
+    if len({cp(t) for t in ins}) >= 2:
+        ctry = sorted({t.get("counterparty_country") for t in ins} - {"United Kingdom"})
+        reason = ("%d unrelated people (%s) paid %s into the account%s, and nothing on file shows a gift, "
+                  "loan or other link to the customer." % (
+                      len({cp(t) for t in ins}), join_names([cp(t) for t in ins]), fmt_gbp(total(ins)),
+                      (" from " + ", ".join(ctry)) if ctry else ""))
+        if third_out:
+            reason += " %s was then paid out to %s." % (fmt_gbp(total(third_out)), join_names([cp(t) for t in third_out]))
+        reason += " The account appears to be used for other people's money."
+        return D("ESCALATE", "ESC_THIRD_PARTY_FUNDING", reason,
+                 [d.id for d in ch] + tids(ins) + tids(third_out), "third_party_pattern")
+    return None
+
+
+def rule_cash_sent_abroad_pattern(c):
+    """Large cash paid in and most of it sent abroad within days, with nothing explaining the cash."""
+    if c.is_business or "TM02" not in c.rules:
+        return None
+    cash = [t for t in c.a_in() if t.get("channel") in ("cash_deposit", "cash_topup")]
+    abroad = [t for t in c.a_out() if t.get("channel") == "swift"
+              and (t.get("counterparty_country") or "United Kingdom") != "United Kingdom"
+              and not c.is_own_name(t.get("counterparty_name"))]
+    if not cash or not abroad or total(abroad) < 0.8 * total(cash):
+        return None
+    if any(d.type not in ("due_diligence_summary", "proof_of_address", "contact_note", "support_chat")
+           for d in c.docs):
+        return None
+    reason = ("%s in cash was paid in (%s) and %s was sent abroad to %s within days. Nothing on file shows "
+              "where the cash came from or why it was sent on%s." % (
+                  fmt_gbp(total(cash)), ", ".join(fmt_gbp(amt(t)) for t in cash), fmt_gbp(total(abroad)),
+                  join_names(["%s in %s" % (cp(t), t.get("counterparty_country")) for t in abroad]),
+                  ", and the customer's explanations in %s are not supported by any document" % ", ".join(
+                      d.id for d in c.chats()) if c.chats() else ""))
+    return D("ESCALATE", "ESC_UNEXPLAINED_FUNDS", reason,
+             [d.id for d in c.chats()] + tids(cash) + tids(abroad), "cash_abroad_pattern")
+
+
 ESCALATION_RULES = [rule_mule, rule_device, rule_structuring_note, rule_dissolved_payer,
                     rule_pass_through, rule_family_corridor, rule_investment_third_party,
-                    rule_conflicting_stories, rule_invoice_mismatch, rule_payment_file_addresses]
+                    rule_conflicting_stories, rule_invoice_mismatch, rule_payment_file_addresses,
+                    rule_mule_pattern, rule_investment_third_party_pattern, rule_cash_sent_abroad_pattern]

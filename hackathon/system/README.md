@@ -27,6 +27,14 @@ Each case is one customer, or at the payments firm one held payment. The case ge
    - **ESC_THIRD_PARTY_FUNDING:** the customer says other people invest through their account; or a payment file pays many "independent" payees who share a handful of addresses, funded by an unrelated third party.
    - **ESC_EARLY_REDEMPTION:** fund units bought with third-party money and sold back quickly to pay other people.
    - **ESC_INVOICE_MISMATCH:** the invoices are for goods or services the business does not deal in, such as phone handsets for a caterer or consultancy for a produce importer, or a staff note records the director being evasive.
+
+   Customer chats are used for these checks, but the engine never depends on their exact wording. A second set of checks looks only at the money and the documents:
+   - many unrelated people paying in, with the money leaving in repeated payments to one company plus cash withdrawals;
+   - several unrelated people funding an investment account with nothing linking them to the customer;
+   - early fund sales paid out to someone other than the customer;
+   - cash paid in and sent abroad within days, with nothing explaining the cash.
+
+   With every chat and fraud report made unreadable, every development case keeps its verdict.
 2. **Internal list (TM22).** The decision follows the policy:
    - **Company officer match.** The engine checks the officer register and the significant-control register at the payment date. If the listed person still controlled the counterparty, even after resigning as director, it escalates with ESC_LISTED_PARTY. If they had left before the payment and an invoice matches, it closes.
    - **Address-only match.** If the register shows different people run the business and the unit differs, it closes with LIST_MATCH_DIFFERENT_PARTY.
@@ -37,7 +45,7 @@ Each case is one customer, or at the payments firm one held payment. The case ge
    - **Vehicles:** a car's registration must match the insurance schedule.
    - **Refunds:** a refund needs an earlier payment to the same party, at least as large.
    - **Own accounts:** an account counts as the customer's own only when a statement on file shows they hold it. If the TM01 multiple is 5 times the declared income or volume or more, the verdict is RFI_UPDATED_PROFILE, as the policy says.
-   - **Earlier reviews:** they are cited as context and never treated as covering new or larger activity.
+   - **Earlier reviews:** they are cited as context and never treated as covering new or larger activity. For example, cash paid back in after a reviewed withdrawal gets an RFI, because only the customer's word links the two.
 4. **Otherwise RFI.** The engine asks for the one document that would settle the case, such as the solicitor's letter for an estate payment, the booking for a group trip, the loan agreement and invoice for a car, or a statement for an own-name account. The reason says exactly what to ask for.
 
 Whatever happens, every case gets a line. If a rule fails unexpectedly the case becomes an RFI, never a silent omission.
@@ -50,7 +58,7 @@ Reasons are 2 to 4 sentences built from the case's own facts: names, amounts, da
 
 | Institution | CLOSE | RFI | ESCALATE |
 |---|---|---|---|
-| Bank | 500 | 250 | 250 |
+| Bank | 461 | 289 | 250 |
 | E-money | 500 | 250 | 250 |
 | Investment | 500 | 250 | 250 |
 | Payments and FX | 500 | 250 | 250 |

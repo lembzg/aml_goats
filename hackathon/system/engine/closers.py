@@ -78,7 +78,7 @@ def rule_own_account(c):
     for t in need:
         d = tx_on_statement(c, t, stmts)
         (explained if d else unexplained).append((t, d))
-    if unexplained and c.inst.name != "payments_fx":
+    if unexplained:
         return None
     if not explained:
         return None
@@ -580,12 +580,16 @@ def rule_cash_redeposit(c):
     rv = [r for r in c.reviews if r.get("rule_id") == "TM05"]
     if not w:
         return None
-    reason = ("The %s cash deposit on %s is the return of the %s the customer withdrew on %s. Review %s "
-              "closed that withdrawal as cash for a private car purchase, and in %s the customer says the "
-              "purchase fell through and they paid the same cash back in." % (
-                  fmt_gbp(amt(t)), day(t), fmt_gbp(amt(w[0])), day(w[0]),
-                  rv[0]["review_id"] if rv else "on file", chats[0].id))
-    return D("CLOSE", "REFUND_OF_EARLIER_PAYMENT", reason,
+    # The earlier review covers only the withdrawal; the redeposit is new activity and the
+    # only evidence that it is the same cash is the customer's own word, so ask, don't close.
+    reason = ("The customer paid in %s in cash on %s and says in %s it is the same cash they withdrew on "
+              "%s for a private car purchase that fell through. Review %s covered only that withdrawal, "
+              "and nothing on file shows the purchase fell through or that this is the same money. Ask the "
+              "customer for evidence the car purchase did not go ahead, such as messages with the seller, "
+              "and where the cash was held since %s." % (
+                  fmt_gbp(amt(t)), day(t), chats[0].id, day(w[0]),
+                  rv[0]["review_id"] if rv else "on file", day(w[0])))
+    return D("RFI", "RFI_SOURCE_OF_FUNDS", reason,
              [chats[0].id] + [r["review_id"] for r in rv[:1]] + tids(w[:1]) + tids([t]), "cash_return")
 
 

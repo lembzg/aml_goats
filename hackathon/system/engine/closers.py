@@ -390,6 +390,84 @@ def rule_collection(c):
 # Invoices, contracts and payment files
 # ---------------------------------------------------------------------
 
+def _payee_name(doc):
+    payee = doc.field("pay to", "payee", "payable to") or ""
+    return payee.split(",")[0].strip()
+
+
+def on_behalf_guard(c, doc, t, beneficiary, kind):
+    """Checks before closing a payment the customer made abroad on someone else's behalf
+    (a relative's hospital bill, school fees, a funeral). Returns a Decision that blocks the
+    close, or None when every check passes.
+
+    1. The money went to the payee the bill names.
+    2. It is the only payment to that payee or to that higher-risk country.
+    3. No third party paid the customer a similar sum in the week before.
+    4. The beneficiary is someone other than the customer and shares their surname.
+    """
+    when = to_date(t.get("booked_at"))
+    country = t.get("counterparty_country")
+    payee = _payee_name(doc)
+    hr = c.high_risk_countries()
+
+    # 1. payee on the bill must be who was paid
+    if payee and norm(payee) not in norm(cp(t)) and norm(cp(t)) not in norm(payee):
+        reason = ("The %s sent on %s went to %s, but %s %s says it must be paid to %s. The bill does not "
+                  "support the payment, so the stated purpose cannot be relied on." % (
+                      fmt_gbp(amt(t)), day(t), cp(t), kind, doc.id, payee))
+        return D("ESCALATE", "ESC_INVOICE_MISMATCH", reason, [doc.id, t["transaction_id"]],
+                 "on_behalf_payee")
+
+    # 2. repeat payments to the same payee or the same higher-risk country
+    repeats = [u for u in c.txs if u is not t and u.get("direction") == "out"
+               and u["transaction_id"] != t["transaction_id"]
+               and (norm(cp(u)) == norm(cp(t))
+                    or (country and country.lower() in hr and u.get("counterparty_country") == country))]
+    if repeats:
+        reason = ("Besides the %s to %s on %s backed by %s %s, the customer made %d other payment(s) to %s "
+                  "(%s in total), so this is a pattern rather than a one-off bill." % (
+                      fmt_gbp(amt(t)), cp(t), day(t), kind, doc.id, len(repeats),
+                      country if country and country.lower() in hr else cp(t), fmt_gbp(total(repeats))))
+        return D("ESCALATE", "ESC_HIGH_RISK_CORRIDOR", reason,
+                 [doc.id, t["transaction_id"]] + tids(repeats, 4), "on_behalf_repeat")
+
+    # 3. someone else's money arriving just before
+    funders = []
+    for u in c.txs:
+        d = to_date(u.get("booked_at"))
+        if (u.get("direction") == "in" and d and when and 0 <= (when - d).days <= 7
+                and amt(u) >= 0.5 * amt(t) and not c.is_own_name(u.get("counterparty_name"))
+                and "salary" not in (u.get("reference") or "").lower()):
+            funders.append(u)
+    if funders:
+        reason = ("In the week before the %s paid to %s on %s, %s paid the customer %s. The payment abroad "
+                  "appears to be funded by a third party, not the customer's own money." % (
+                      fmt_gbp(amt(t)), cp(t), day(t), join_names([cp(u) for u in funders], 2),
+                      fmt_gbp(total(funders))))
+        return D("ESCALATE", "ESC_THIRD_PARTY_FUNDING", reason,
+                 tids(funders) + [t["transaction_id"], doc.id], "on_behalf_funded")
+
+    # 4. the beneficiary must plausibly be the relative described
+    ben, me = norm(beneficiary), norm(c.name)
+    same_person = ben == me
+    no_family_link = ben and me and ben.split()[-1] != me.split()[-1]
+    if same_person or no_family_link:
+        if same_person:
+            ask = ("Ask %s who received the treatment, and if it was a parent of the same name, evidence of "
+                   "that relationship such as a birth certificate." % c.name)
+            why = "names the customer themself, %s," % c.name
+        else:
+            ask = ("Ask %s for evidence of their relationship to %s, such as a birth certificate." % (
+                c.name, beneficiary))
+            why = "names %s, who does not share the customer's surname," % beneficiary
+        reason = ("The %s sent to %s on %s matches %s %s, but the %s %s while the customer describes the "
+                  "beneficiary as a relative. Nothing on file settles who the beneficiary is. %s" % (
+                      fmt_gbp(amt(t)), cp(t), day(t), kind, doc.id, kind, why, ask))
+        return D("RFI", "RFI_PURPOSE_DOCUMENTS", reason, [doc.id, t["transaction_id"]],
+                 "on_behalf_relationship")
+    return None
+
+
 def rule_invoices(c):
     a_out = [t for t in c.a_out() if amt(t) >= 500]
     if c.held and c.held not in a_out:
@@ -415,6 +493,9 @@ def rule_invoices(c):
         t = [t for t in a_out if doc_amount_match(hosp[0], t)]
         if t:
             patient = hosp[0].field("patient") or "a relative"
+            blocked = on_behalf_guard(c, hosp[0], t[0], patient, "hospital invoice")
+            if blocked:
+                return blocked
             chat = [d for d in c.chats() if norm(patient) in norm(d.text)]
             reason = ("The %s sent to %s in %s on %s pays hospital invoice %s for %s's treatment (%s), "
                       "same amount and payee." % (

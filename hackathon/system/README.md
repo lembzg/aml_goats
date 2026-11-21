@@ -11,7 +11,8 @@ system/
   engine/rules.py     escalation rules and the internal-list (TM22) logic
   engine/closers.py   rules that close a case when documents explain it
   engine/rfi.py       requests for information when the activity is plausible but undocumented
-  engine/guards.py    last checks that can block any close
+  engine/guards.py    final checks that can block any close
+  tests/test_traps.py plants each trap into a copy of a real closed case
 ```
 
 ## Order of decisions
@@ -48,15 +49,17 @@ Each case is one customer, or at the payments firm one held payment. The case ge
    - **Own accounts:** an account counts as the customer's own only when a statement on file shows they hold it. If the TM01 multiple is 5 times the declared income or volume or more, the verdict is RFI_UPDATED_PROFILE, as the policy says.
    - **Earlier reviews:** they are cited as context and never treated as covering new or larger activity. Cash paid back in after a reviewed withdrawal closes only when the bank's own records show a withdrawal of exactly the same amount.
    - **Payments abroad on someone else's behalf** (a relative's hospital bill): the money must go to the payee the bill names (otherwise ESC_INVOICE_MISMATCH); it must be the only payment to that payee or that higher-risk country (otherwise ESC_HIGH_RISK_CORRIDOR); no third party may have paid the customer a similar sum in the week before (otherwise ESC_THIRD_PARTY_FUNDING); and the beneficiary must share the customer's surname (otherwise RFI_PURPOSE_DOCUMENTS, asking for proof of the relationship). A beneficiary with the customer's own full name is allowed, since a parent can share both names.
-4. **Last checks before any close** (`engine/guards.py`). A close that passes its own rule is still blocked if:
-   - the customer matches an internal list entry on name and date of birth (escalate);
-   - at the payments firm, a held payment of £10,000 or more to someone other than the client has no invoice or contract on file showing that amount (RFI, as the policy requires);
-   - a statement, loan, policy, invoice or receipt relied on is made out to someone other than the customer, or a sale receipt shows the customer as the buyer (RFI);
-   - a third party whose payment is relied on is not named in any of the documents (RFI);
-   - an individual sends the explained money straight on within a week to someone unexplained (RFI, or escalate if it goes to a higher-risk country);
-   - a document relied on is dated after the case was opened (RFI).
+4. **Final checks on every close** (`engine/guards.py`). A close rule usually proves one fact, such as a document matching one payment. Before any CLOSE is written, the rest of the case is checked, and the close is blocked if:
+   - **Money moved on:** money a document explains was sent within three days to a new payee nothing on file explains (ESC_UNEXPLAINED_FUNDS), or within a week to anyone unexplained (RFI, or escalate if it goes to a higher-risk country). Buying fund units counts as the money staying.
+   - **Payer not named:** a document explaining money in does not name who paid it (RFI).
+   - **Dates don't fit:** the deciding document is dated more than a month after the money moved, more than a year before it, or after the case was opened (RFI_PURPOSE_DOCUMENTS).
+   - **A one-off repeats:** similar money came in before a documented one-off event (RFI_SOURCE_OF_FUNDS).
+   - **Returned cash with gaps:** no earlier review of the withdrawal, or the cash was paid back in at a different branch (RFI_SOURCE_OF_FUNDS).
+   - **Wrong name on a document:** a statement, loan, policy, invoice or receipt relied on is made out to someone other than the customer, or a sale receipt shows the customer as the buyer (RFI).
+   - **Customer on the internal list:** the customer matches an entry on name and date of birth (ESC_LISTED_PARTY).
+   - **Payments firm invoices:** a held payment of £10,000 or more to someone other than the client has no invoice or contract showing that amount, or an alerted payment of that size goes to a payee the client has never paid before with no invoice (RFI_PURPOSE_DOCUMENTS). Large payments to suppliers the client has paid regularly before are named in the reason instead.
 
-   No guard fires on the development cases. Each one was tested by planting its trap in a real closed case and confirming the close is blocked.
+   No check blocks a close on the development cases. Each one is tested by planting its trap into a copy of a real closed case.
 5. **Otherwise RFI.** The engine asks for the one document that would settle the case, such as the solicitor's letter for an estate payment, the booking for a group trip, the loan agreement and invoice for a car, or a statement for an own-name account. The reason says exactly what to ask for.
 
 Whatever happens, every case gets a line. If a rule fails unexpectedly the case becomes an RFI, never a silent omission.
@@ -77,3 +80,7 @@ Reasons are 2 to 4 sentences built from the case's own facts: names, amounts, da
 A run of 1,000 cases takes about 15 seconds. Nothing from the development cases is built in: no case IDs, names or amounts. The engine reads the higher-risk country list from the institution's `POLICY.md`.
 
 Set `TM_DEBUG=1` to add a `_tag` field naming the rule that decided each case.
+
+## Tests
+
+`python3 system/tests/test_traps.py institutions` plants each edge case above into a copy of a real closed case (in a temporary folder) and checks the system no longer closes it, and that untouched controls still close. It takes about 30 seconds.

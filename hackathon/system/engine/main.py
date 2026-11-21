@@ -97,9 +97,7 @@ def main(argv):
     for case in inst.cases:
         try:
             c = Ctx(inst, case)
-            d = decide(c)
-            d = check_close(c, d) or d
-            d = sanitize(c, d)
+            d = sanitize(c, check_close(c, decide(c)))
         except Exception:  # never drop a case
             if debug:
                 traceback.print_exc()

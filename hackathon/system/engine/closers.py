@@ -403,7 +403,7 @@ def on_behalf_guard(c, doc, t, beneficiary, kind):
     1. The money went to the payee the bill names.
     2. It is the only payment to that payee or to that higher-risk country.
     3. No third party paid the customer a similar sum in the week before.
-    4. The beneficiary is someone other than the customer and shares their surname.
+    4. The beneficiary shares the customer's surname, so a family link is plausible.
     """
     when = to_date(t.get("booked_at"))
     country = t.get("counterparty_country")
@@ -447,22 +447,16 @@ def on_behalf_guard(c, doc, t, beneficiary, kind):
         return D("ESCALATE", "ESC_THIRD_PARTY_FUNDING", reason,
                  tids(funders) + [t["transaction_id"], doc.id], "on_behalf_funded")
 
-    # 4. the beneficiary must plausibly be the relative described
+    # 4. the beneficiary must plausibly be the relative described: a different surname means
+    # nothing on file links them to the customer. (A beneficiary with the customer's own full
+    # name is not blocked: a parent can share both names.)
     ben, me = norm(beneficiary), norm(c.name)
-    same_person = ben == me
-    no_family_link = ben and me and ben.split()[-1] != me.split()[-1]
-    if same_person or no_family_link:
-        if same_person:
-            ask = ("Ask %s who received the treatment, and if it was a parent of the same name, evidence of "
-                   "that relationship such as a birth certificate." % c.name)
-            why = "names the customer themself, %s," % c.name
-        else:
-            ask = ("Ask %s for evidence of their relationship to %s, such as a birth certificate." % (
-                c.name, beneficiary))
-            why = "names %s, who does not share the customer's surname," % beneficiary
-        reason = ("The %s sent to %s on %s matches %s %s, but the %s %s while the customer describes the "
-                  "beneficiary as a relative. Nothing on file settles who the beneficiary is. %s" % (
-                      fmt_gbp(amt(t)), cp(t), day(t), kind, doc.id, kind, why, ask))
+    if ben and me and ben != me and ben.split()[-1] != me.split()[-1]:
+        reason = ("The %s sent to %s on %s matches %s %s, but the %s names %s, who does not share the "
+                  "customer's surname, while the customer describes the beneficiary as a relative. Nothing "
+                  "on file links them. Ask %s for evidence of their relationship to %s, such as a birth "
+                  "certificate." % (fmt_gbp(amt(t)), cp(t), day(t), kind, doc.id, kind, beneficiary,
+                                    c.name, beneficiary))
         return D("RFI", "RFI_PURPOSE_DOCUMENTS", reason, [doc.id, t["transaction_id"]],
                  "on_behalf_relationship")
     return None

@@ -1,6 +1,6 @@
 # Alert review workbench
 
-A local, read-only screen for reviewing the system's decisions the way an analyst works a case.
+A local screen for reviewing the system's decisions the way an analyst works a case.
 
 ## Start it
 
@@ -22,16 +22,25 @@ The institutions folder holds one folder per institution (`bank`, `emoney`, ...)
 
 ## What it shows
 
+The header contains the AML label, Case review title and Industries dropdown spaced across the page. The dropdown switches between the four institution datasets. The workbench uses a monochrome interface with one Arial/Helvetica font family, three text sizes (12, 14 and 28px), two weights (regular and bold), the customer and system decision first, and the alert explanation open. Customer profile, transactions, documents, list entries and earlier reviews can be expanded as needed. Evidence links show the document title, payment details or record type alongside its ID; selecting View opens the record automatically. Verdicts retain explicit labels and distinct marker shapes. No external font downloads are required.
+
+Previous and Next move through the current filtered queue. Changing a filter keeps the current case if it still matches, otherwise selects the first match. If there are no matches, the case pane shows an empty state. Older loading responses cannot replace a newer selection. Em dashes in displayed source text are presented as semicolons without changing the underlying records.
+
 - The case queue for each institution, filterable by verdict and alert rule, searchable by case ID, customer or reason code.
-- Totals of closed, requests for information and escalated cases.
 - For each case:
   - the decision, reason code and reason;
   - the evidence IDs it relies on (select one to jump to that transaction, document, list entry or review);
   - the alerts and the customer's declared profile;
   - transactions, with alerted, held and relied-on items marked;
-  - every document on file, with the ones relied on opened;
+  - every document on file, with the ones relied on marked;
   - earlier reviews and internal list entries.
 
 Use the up and down arrow keys in the queue to move between cases. Each case has its own link, for example `#bank/BK-CS365131`.
 
-The workbench never changes the data or the system's output, and it lives outside `system/`, so it has no effect on the graded run.
+## Analyst decisions
+
+Use Case decision to select Close, Request information or Escalate, add a reason, and select Save decision. You can edit the note or use the system recommendation again. The queue and filters reflect the saved analyst decision, while the original system recommendation and evidence stay visible.
+
+Analyst decisions are stored in this browser's localStorage, separately for each industry and case. They survive refreshes in the same browser and origin. They are not shared with other browsers or analysts; clearing browser data removes them. A failed storage write shows an error and does not update the displayed saved decision. This is a local review workspace, not a payment-release or reporting workflow.
+
+The workbench never changes institution data or the system's output, and it lives outside `system/`, so it has no effect on the graded run.

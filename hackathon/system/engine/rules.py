@@ -8,7 +8,7 @@ requests for information when the activity is plausible but undocumented.
 import re
 from datetime import date
 
-from context import Decision, words
+from context import Decision, core_name, payee_ok, same_party, words
 from data import close_amount, fmt_date, fmt_gbp, norm, parse_long_date, to_date, MONEY_RE
 
 
@@ -53,11 +53,36 @@ def join_names(names, limit=3):
 # 1. Signs of crime
 # =====================================================================
 
+PASS_ON_RE = re.compile(r"\bpass(?:ed|ing)?\b.{0,30}\bon\b|\bforward(?:ed|ing)?\b|\bsend(?:ing)? (?:it|the money|them) on\b|"
+                        r"\bkeep (?:a |my |the )?(?:cut|share|percentage|commission)|\bcommission\b|\bwages\b")
+
+
+def _lag_days(ins, outs):
+    """The longest time, in days, between a payment out and the last money in before it."""
+    worst = 0
+    for o in outs:
+        od = to_date(o.get("booked_at"))
+        prior = [to_date(i.get("booked_at")) for i in ins if to_date(i.get("booked_at")) and od
+                 and to_date(i.get("booked_at")) <= od]
+        if od and prior:
+            worst = max(worst, (od - max(prior)).days)
+    return worst
+
+
+def _lag_text(ins, outs):
+    """'within hours' when every payment out left within a day of the last money in before it."""
+    worst = _lag_days(ins, outs)
+    return "within hours" if worst <= 1 else "within %d days" % worst
+
+
 def rule_mule(c):
     reports = c.docs_of("sending_bank_fraud_report")
     chat = c.chat_text()
-    recruited = ("crypto account" in chat or "keep" in chat and "wages" in chat
-                 or "payments assistant" in chat)
+    payers = {cp(t) for t in c.a_in() if not c.is_own_name(t.get("counterparty_name"))}
+    # the customer's own words count only when they describe passing other people's money on, and
+    # other people's money actually came in
+    recruited = (("payments assistant" in chat or ("crypto" in chat and PASS_ON_RE.search(chat))
+                  or ("keep" in chat and "wages" in chat)) and len(payers) >= 2)
     if not reports and not recruited:
         return None
     victims = []
@@ -68,6 +93,7 @@ def rule_mule(c):
     vtx = [t for t in c.a_in() if t.get("counterparty_name") in victims]
     outs = [t for t in c.a_out() if t.get("channel") not in (
         "cash_withdrawal", "direct_debit", "standing_order", "card")]
+    atm = [t for t in c.a_out() if t.get("channel") == "cash_withdrawal"]
     crypto = sorted({cp(t) for t in outs})
     chats = [d for d in c.chats() if "crypto" in d.low or "wages" in d.low] or c.chats()
     firm = re.search(r"for ([A-Z][\w ]+? (?:Ltd|Limited|LLP))", " ".join(
@@ -78,34 +104,45 @@ def rule_mule(c):
                      "as authorised push payment scam victims (%s)." % (
                          len(reports), join_names(victims, 2), ", ".join(d.id for d in reports)))
     parts.append("The account received %s from %d different people and paid most of it straight "
-                 "on to %s and ATM withdrawals within hours." % (
+                 "on to %s%s %s." % (
                      fmt_gbp(total(c.a_in())), len({cp(t) for t in c.a_in()}), join_names(crypto, 2)
-                     or "other accounts"))
+                     or "other accounts", " and ATM withdrawals" if atm else "", _lag_text(c.a_in(), outs + atm)))
     if recruited and chats:
+        said = " ".join(" ".join(c.customer_lines(d)) for d in chats).lower()
+        cut = ("keep a cut as wages" if "wages" in said else
+               ("keep a commission" if "commission" in said else "keep a share"))
         parts.append("In %s the customer says they pass client money on to the crypto account of %s "
-                     "and keep a cut as wages, a recruited money mule pattern." % (
-                         chats[0].id, firm.group(1) if firm else "an online employer"))
+                     "and %s, a recruited money mule pattern." % (
+                         chats[0].id, firm.group(1) if firm else "an online employer", cut))
     ev = [d.id for d in reports] + [d.id for d in chats] + tids(vtx) + tids(outs, 3)
     return D("ESCALATE", "ESC_MULE_ACTIVITY", " ".join(parts), ev, "mule")
 
 
 def rule_device(c):
+    """A device used by several customers is context on its own. It shows someone else controls the account
+    only together with the money pattern: other people's money in and most of it moved straight out."""
     for d in c.docs_of("device_export"):
         for t in d.table_dicts():
             for r in t:
-                ids = re.findall(r"[A-Z]{2}-C\d+", r.get("customers who logged in from it", ""))
+                ids = []
+                for i in re.findall(r"[A-Z]{2}-C\d+", r.get("customers who logged in from it", "")):
+                    if i not in ids:
+                        ids.append(i)
                 if len(ids) > 1:
-                    others = [i for i in ids if i != c.cust_id]
                     ins = c.a_in()
                     outs = c.a_out()
+                    third = [x for x in ins if not c.is_own_name(x.get("counterparty_name"))
+                             and not str(x.get("reference") or "").upper().startswith("SALARY")]
+                    if not third or total(outs) < 0.5 * total(third):
+                        continue
                     reason = ("Device %s, first seen %s, was used to log in to %d customer accounts "
                               "(%s) from %s, so someone other than the customer appears to control "
-                              "this account. Money from %d third parties (%s) was moved on within "
-                              "hours, %s in total, mostly to %s." % (
+                              "this account. Money from %d third parties (%s) was moved on %s, "
+                              "%s in total, mostly to %s." % (
                                   r.get("device", "?"), r.get("first seen", "?"), len(ids),
                                   ", ".join(ids[:4]), r.get("login countries", "several countries"),
                                   len({cp(t) for t in ins if not c.is_own_name(t.get('counterparty_name'))}),
-                                  fmt_gbp(total(ins)), fmt_gbp(total(outs)),
+                                  fmt_gbp(total(ins)), _lag_text(ins, outs), fmt_gbp(total(outs)),
                                   join_names([cp(t) for t in outs], 2) or "other accounts"))
                     return D("ESCALATE", "ESC_ACCOUNT_MISUSE", reason,
                              [d.id] + tids(ins, 4) + tids(outs, 4), "device")
@@ -120,27 +157,55 @@ EVASIVE_RE = re.compile(r"unable|unwilling|could ?n[o']t|did ?n[o']t know|vague|
                         r"not (?:able|willing)")
 
 
+ASK_RE = re.compile(r"\b(?:ask(?:ed|ing|s)?|inquir\w*|enquir\w*|question\w*|quer(?:y|ied|ies)|"
+                    r"want(?:ed|s)? to (?:know|check|confirm)|wonder(?:ed|ing)?|check(?:ed|ing)? (?:whether|if)|"
+                    r"sought|curious)\b")
+DENY_RE = re.compile(r"\b(?:did ?n[o’']t|did not|never|nobody|no one)\s+(?:ask|inquire|enquire|question|quer)|"
+                     r"\bno questions?\b|\bwithout asking\b")
+SUB_THRESHOLD = {"emoney": (800.0, 1000.0, ("cash_topup", "cash_deposit"))}
+
+
+def _sub_threshold(c):
+    """Alerted transactions sitting just under the institution's threshold, if there are three or more."""
+    lo, hi, channels = SUB_THRESHOLD.get(c.inst.name, (9000.0, 10000.0, ("cash_deposit", "cash_topup")))
+    if c.inst.name == "payments_fx":
+        txs = [t for t in c.atx if t.get("direction") == "out" and lo <= amt(t) < hi]
+    else:
+        txs = [t for t in c.atx if t.get("channel") in channels and lo <= amt(t) < hi]
+    return txs if len(txs) >= 3 else []
+
+
 def rule_structuring_note(c):
+    """A staff note records the customer asking whether staying under a threshold avoids checks, and the
+    alerted activity really is split just under it. A note where staff explain the threshold, or where the
+    customer did not ask, is not a sign of structuring."""
     for d in c.docs_of("staff_note"):
         low = d.low
-        if STRUCT_RE.search(low) and not EVASIVE_RE.search(low):
-            tm03 = set()
-            for a in c.by_rule.get("TM03", []):
-                tm03.update(a.get("transaction_ids") or [])
-            deps = [t for t in c.atx if t["transaction_id"] in tm03] or [
-                t for t in c.atx if 0 < amt(t) < 10000 and t.get("channel") in ("cash_deposit", "cash_topup")]
-            if not deps:
-                deps = c.atx
-            limit = "£10,000.00" if c.inst.name != "emoney" else "£1,000.00"
-            n = len(deps)
-            reason = ("%s records the customer asking whether amounts kept below the %s threshold "
-                      "avoid reporting or checks. The alerted activity is %d transactions of %s to %s "
-                      "each, %s in total, spread across dates and locations, which is consistent with "
-                      "splitting to stay under the threshold." % (
-                          d.id, limit if "invoice" not in low else "£10,000.00 invoice", n,
-                          fmt_gbp(min(amt(t) for t in deps)), fmt_gbp(max(amt(t) for t in deps)),
-                          fmt_gbp(total(deps))))
-            return D("ESCALATE", "ESC_STRUCTURING", reason, [d.id] + tids(deps), "structuring")
+        if not STRUCT_RE.search(low) or not ASK_RE.search(low) or DENY_RE.search(low):
+            continue
+        if "TM03" not in c.rules and not _sub_threshold(c):
+            continue
+        tm03 = set()
+        for a in c.by_rule.get("TM03", []):
+            tm03.update(a.get("transaction_ids") or [])
+        deps = [t for t in c.atx if t["transaction_id"] in tm03] or _sub_threshold(c) or [
+            t for t in c.atx if 0 < amt(t) < 10000 and t.get("channel") in ("cash_deposit", "cash_topup")]
+        if not deps:
+            deps = c.atx
+        limit = "£10,000.00" if c.inst.name != "emoney" else "£1,000.00"
+        n = len(deps)
+        days = {str(t.get("booked_at") or "")[:10] for t in deps}
+        places = {t.get("location") for t in deps if t.get("location")}
+        spread = ("spread across dates and locations, " if len(days) > 1 and len(places) > 1 else
+                  ("spread across %d days, " % len(days) if len(days) > 1 else ""))
+        reason = ("%s records the customer asking whether amounts kept below the %s threshold "
+                  "avoid reporting or checks. The alerted activity is %d transactions of %s to %s "
+                  "each, %s in total, %swhich is consistent with "
+                  "splitting to stay under the threshold." % (
+                      d.id, limit if "invoice" not in low else "£10,000.00 invoice", n,
+                      fmt_gbp(min(amt(t) for t in deps)), fmt_gbp(max(amt(t) for t in deps)),
+                      fmt_gbp(total(deps)), spread))
+        return D("ESCALATE", "ESC_STRUCTURING", reason, [d.id] + tids(deps), "structuring")
     return None
 
 
@@ -153,18 +218,26 @@ def rule_dissolved_payer(c):
         pays = [t for t in c.a_in() if norm(t.get("counterparty_name")) == norm(comp)]
         if not pays:
             continue
+        gone = parse_long_date(status)
+        first = min(to_date(t.get("booked_at")) for t in pays if to_date(t.get("booked_at"))) if any(
+            to_date(t.get("booked_at")) for t in pays) else None
+        if gone and first and gone >= first:
+            continue  # it still existed when it paid
         outs = [t for t in c.a_out()]
         chat = [x for x in c.chats() if norm(comp) in norm(x.text) or "loan" in x.low]
         reason = ("%s paid %s into the account in %d transfers referenced %s, but the company register "
                   "(%s) shows it was %s, before the payments." % (
                       comp, fmt_gbp(total(pays)), len(pays), pays[0].get("reference") or "",
                       d.id, status[0].lower() + status[1:]))
-        if chat:
-            reason += (" The customer described the money in %s as a personal loan from a friend, "
-                       "which does not fit payments from a company." % chat[0].id)
+        said = " ".join(" ".join(c.customer_lines(x)) for x in chat).lower()
+        if chat and "loan" in said:
+            reason += (" The customer described the money in %s as %s, which does not fit payments from a "
+                       "company." % (chat[0].id, "a personal loan from a friend" if "friend" in said else "a loan"))
         if outs:
-            reason += " %s was then paid out to %s within days." % (
-                fmt_gbp(total(outs)), join_names([cp(t) for t in outs], 2))
+            lag = _lag_days(pays, outs)
+            reason += " %s was then paid out to %s %s." % (
+                fmt_gbp(total(outs)), join_names([cp(t) for t in outs], 2),
+                "within days" if lag <= 7 else "within %d days" % lag)
         return D("ESCALATE", "ESC_UNEXPLAINED_FUNDS", reason,
                  [d.id] + [x.id for x in chat] + tids(pays) + tids(outs), "dissolved")
     return None
@@ -197,9 +270,11 @@ def rule_pass_through(c):
            and (t.get("reference") or "").upper() != "CARD SETTLEMENT"]
     person = linked[0][2]
     contracts = c.docs_of("consulting_contract")
-    reason = ("%s received %s from %s and within a day paid %s on to %s, companies the register "
+    lag = _lag_text(ins, outs)
+    reason = ("%s received %s from %s and %s paid %s on to %s, companies the register "
               "extracts (%s) show are owned and run by its own director %s." % (
                   c.name, fmt_gbp(total(ins)), join_names([cp(t) for t in ins]),
+                  "within a day" if lag == "within hours" else lag,
                   fmt_gbp(total(outs)), join_names(sorted({cp(t) for t in outs})),
                   ", ".join(x[1].id for x in linked), person))
     if contracts:
@@ -227,12 +302,101 @@ def _first_sentence(s):
     return (m.group(1) if m else s).rstrip(".")
 
 
-def rule_listed_party(c):
-    """TM22: decide whether the counterparty is the listed party."""
-    alerts = c.by_rule.get("TM22")
-    if not alerts:
+MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september",
+               "october", "november", "december"]
+_BORN_VALUE = (r"(\d{1,2} [A-Z][a-z]+ \d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4}|[A-Z][a-z]+ \d{4}|"
+               r"(?:1[89]|20)\d{2})")
+_BORN_KEY = r"(?:\bborn(?: on| in)?|\bDOB\b|\bdate of birth\b|\bbirth year(?: of)?|\byear of birth\b)"
+BORN_AFTER_RE = re.compile(r"^[\s,(:*-]{0,4}" + _BORN_KEY + r"[\s:*,]*" + _BORN_VALUE, re.I)
+
+
+def _parse_born(s):
+    """(year, month or None, day or None) from '14 August 1978', 'August 1978', '1978', '1978-08-14' or '14/08/1978'."""
+    s = (s or "").strip()
+    if not s:
         return None
-    a = alerts[0]
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)
+    if m:
+        return (int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    d = to_date(s)
+    if d:
+        return (d.year, d.month, d.day)
+    m = re.search(r"\b([A-Za-z]+) (\d{4})\b", s)
+    if m and m.group(1).lower() in MONTH_NAMES:
+        return (int(m.group(2)), MONTH_NAMES.index(m.group(1).lower()) + 1, None)
+    m = re.search(r"\b(1[89]\d{2}|20\d{2})\b", s)
+    if m:
+        return (int(m.group(1)), None, None)
+    return None
+
+
+def _born_value(b):
+    """A full date as a date (so it prints as before); a partial one as text such as 'August 1993' or '1993'."""
+    y, m, d = b
+    if d:
+        return date(y, m, d)
+    if m:
+        return "%s %d" % (MONTH_NAMES[m - 1].capitalize(), y)
+    return str(y)
+
+
+def _dob_text(v):
+    return fmt_date(v) if isinstance(v, date) else str(v or "")
+
+
+def _compare_born(b, ldob):
+    """'same', 'different', or None when the document cannot tell."""
+    if not b or not ldob:
+        return None
+    y, m, d = b
+    if y != ldob.year or (m is not None and m != ldob.month) or (d is not None and d != ldob.day):
+        return "different"
+    if m is not None:
+        return "same"  # year and month (and day, when given) all agree
+    return None        # the year alone agrees: not enough to say it is the same person
+
+
+def _births_for(doc, name):
+    """Birth dates a document gives for this person: in the same sentence, straight after the name, or in
+    the same row of a register table. A date of birth elsewhere in the document belongs to someone else."""
+    out = []
+    pat = re.compile(r"\b" + r"\s+".join(re.escape(w) for w in (name or "").split()) + r"\b", re.I)
+    if not (name or "").split():
+        return out
+    for line in doc.text.splitlines():
+        if line.lstrip().startswith("|"):
+            continue
+        for m in pat.finditer(line):
+            b = BORN_AFTER_RE.search(line[m.end():m.end() + 80])
+            if b:
+                out.append(_parse_born(b.group(1)))
+            before = re.search(_BORN_KEY + r"\s+(?:of\s+)?$", line[max(0, m.start() - 30):m.start()], re.I)
+            if before:
+                v = re.match(r"[\s:*,]*" + _BORN_VALUE, line[m.end():m.end() + 40])
+                if v:
+                    out.append(_parse_born(v.group(1)))
+    for tb in doc.table_dicts():
+        for r in tb:
+            who = r.get("officer") or r.get("person") or r.get("person with significant control") or r.get("name")
+            if who and norm(who) == norm(name):
+                born = r.get("born") or r.get("date of birth")
+                if born:
+                    out.append(_parse_born(born))
+    return [b for b in out if b]
+
+
+def _reg_company(d):
+    """The company a register extract is about."""
+    v = d.field("company")
+    if v:
+        return v
+    first = d.text.strip().splitlines()[0] if d.text.strip() else ""
+    m = re.search(r"(?:register extract|significant control) for (.+?)\s*$", first, re.I)
+    return m.group(1) if m else None
+
+
+def _listed_one(c, a):
+    """TM22: decide whether the counterparty on one list alert is the listed party."""
     m = a.get("measured") or {}
     entry = c.inst.internal_list.get(m.get("list_entry"))
     lid = m.get("list_entry")
@@ -242,23 +406,29 @@ def rule_listed_party(c):
     tdate = to_date(t.get("booked_at")) if t else None
     tx_ids = tids([t]) if t else []
     lname = (entry or {}).get("name", party.split(",")[0])
+    ldob = to_date((entry or {}).get("date_of_birth"))
 
     # --- company officer match: is the listed person still in control at payment?
     if "officer" in on:
         person = party.split(",")[0].strip()
         own = c.own_register()
         regs = [d for d in c.docs_of("company_register_extract", "significant_control_register") if d is not own]
-        still, ended = [], []
+        still, ended, other = [], [], []
         for d in regs:
             for n, r in _register_people(d):
                 if norm(n) != norm(person):
+                    continue
+                born = _parse_born(r.get("born") or r.get("date of birth") or "")
+                if born and ldob and _compare_born(born, ldob) == "different":
+                    other.append((d, r, born))  # same name, but the register's birth date is someone else's
                     continue
                 end = parse_long_date(r.get("ceased") or r.get("resigned") or "")
                 if end is None or (tdate and end >= tdate):
                     still.append((d, r, end))
                 else:
                     ended.append((d, r, end))
-        inv = [d for d in c.docs_of("invoice") if t and any(close_amount(x, amt(t)) for x in d.amounts)]
+        inv = [d for d in c.docs_of("invoice") if t and any(close_amount(x, amt(t)) for x in d.amounts)
+               and payee_ok(d, t)]
         if still:
             d, r, end = still[0]
             role = "a person with significant control" if d.type == "significant_control_register" else "a director"
@@ -282,6 +452,22 @@ def rule_listed_party(c):
                           fmt_gbp(amt(t)), fmt_date(tdate), inv[0].id, cp(t)))
             return D("CLOSE", "LIST_MATCH_DIFFERENT_PARTY", reason,
                      [x.id for x in regs] + [inv[0].id, lid] + tx_ids, "list_officer_left")
+        if other and not ended:
+            d0, _, born0 = other[0]
+            listed_birth = (_dob_text(_born_value((ldob.year, ldob.month, None))) if born0[1]
+                            else str(ldob.year))
+            reason = ("%s of %s shares the name of the person on list entry %s, but %s gives a birth date of %s, "
+                      "not %s, so it is a different person." % (
+                          person, cp(t), lid, d0.id, _dob_text(_born_value(born0)), listed_birth))
+            ev = sorted({d.id for d, _, _ in other}) + [lid] + tx_ids
+            if inv:
+                reason += " The %s payment on %s matches invoice %s from %s." % (
+                    fmt_gbp(amt(t)), fmt_date(tdate), inv[0].id, cp(t))
+                return D("CLOSE", "LIST_MATCH_DIFFERENT_PARTY", reason, ev[:1] + [inv[0].id] + ev[1:],
+                         "list_officer_different")
+            res = D("CLOSE", "LIST_MATCH_DIFFERENT_PARTY", reason, ev, "list_officer_different")
+            res.needs_closer = True  # the list match is cleared, but nothing yet explains the payment
+            return res
         return D("RFI", "RFI_COUNTERPARTY_DETAILS",
                  "%s matched list entry %s on a company officer of %s. Nothing on file shows whether "
                  "%s still controls %s. Ask the customer for the counterparty's details and what the "
@@ -292,8 +478,11 @@ def rule_listed_party(c):
     # --- address match (e.g. a business at a shared works address)
     if "address" in on and entry:
         own = c.own_register()
-        regs = [d for d in c.docs_of("company_register_extract") if d is not own]
+        # only the counterparty's own register can show who runs it
+        regs = [d for d in c.docs_of("company_register_extract") if d is not own and t
+                and same_party(_reg_company(d), cp(t))]
         rcpt = c.docs_of("receipt", "invoice")
+        paid = [d for d in rcpt if t and any(close_amount(x, amt(t)) for x in d.amounts)]
         listed_addr = entry.get("address", "")
         people = set()
         for d in regs:
@@ -308,13 +497,17 @@ def rule_listed_party(c):
                 unit_c = mm.group(1)
         if regs and not same_person and (unit_l is None or unit_c is None or unit_l.group(1) != unit_c):
             reason = ("%s matched list entry %s only on its registered address. The listed party is %s "
-                      "at %s, while %s shows %s is run by %s%s. The %s payment on %s matches %s." % (
+                      "at %s, while %s shows %s is run by %s%s. The %s payment on %s %s." % (
                           cp(t), lid, entry.get("name"), listed_addr, regs[0].id, cp(t),
                           join_names([n for d in regs for n, _ in _register_people(d)][:1]),
                           (" and the receipt places it at Unit %s" % unit_c) if unit_c else "",
-                          fmt_gbp(amt(t)), fmt_date(tdate), rcpt[0].id if rcpt else "the payment record"))
-            return D("CLOSE", "LIST_MATCH_DIFFERENT_PARTY", reason,
-                     [d.id for d in regs] + [d.id for d in rcpt] + [lid] + tx_ids, "list_address_diff")
+                          fmt_gbp(amt(t)), fmt_date(tdate),
+                          ("matches " + paid[0].id) if paid else "is not yet matched to a receipt or invoice"))
+            res = D("CLOSE", "LIST_MATCH_DIFFERENT_PARTY", reason,
+                    [d.id for d in regs] + [d.id for d in rcpt] + [lid] + tx_ids, "list_address_diff")
+            if not paid:
+                res.needs_closer = True
+            return res
         if same_person:
             return D("ESCALATE", "ESC_LISTED_PARTY",
                      "%s is run by %s, the person on list entry %s (%s). The %s payment on %s goes to a "
@@ -323,28 +516,58 @@ def rule_listed_party(c):
                                                              fmt_date(tdate)),
                      [d.id for d in regs] + [lid] + tx_ids, "list_address_same")
 
-    # --- name match: look for a document giving the counterparty's date of birth
+    # --- name match: look for a document giving the counterparty's date of birth next to their name.
+    # A document saying it is the same person outweighs one saying it is not.
     if entry:
-        ldob = to_date(entry.get("date_of_birth"))
+        found = []
         for d in c.docs:
             if norm(lname) not in norm(d.text):
                 continue
-            mm = re.search(r"(?:\bborn(?: on)?|\bDOB|date of birth)[:*\s]*"
-                           r"(\d{1,2} [A-Z][a-z]+ \d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})",
-                           d.text, re.I)
-            ddob = None
-            if mm:
-                s = mm.group(1)
-                if "/" in s:
-                    dd, mo, yy = s.split("/")
-                    s = "%s-%02d-%02d" % (yy, int(mo), int(dd))
-                ddob = to_date(s)
-            if not ddob or not ldob:
-                continue
-            if ddob == ldob:
-                return ("same", d, ldob, entry, t)
-            return ("different", d, ddob, entry, t)
+            for b in _births_for(d, lname):
+                k = _compare_born(b, ldob)
+                if k:
+                    found.append((k, d, b))
+        for kind in ("same", "different"):
+            hits = [x for x in found if x[0] == kind]
+            if hits:
+                return (kind, hits[0][1], _born_value(hits[0][2]), entry, t)
     return ("unknown", None, None, entry, t)
+
+
+def rule_listed_party(c):
+    """TM22: decide every list alert in the case. Any listed party escalates; any match nothing settles
+    asks; the case can clear only when every match is shown to be someone else."""
+    alerts = c.by_rule.get("TM22")
+    if not alerts:
+        return None
+    results = [_listed_one(c, a) for a in alerts]
+    if len(results) == 1:
+        return results[0]
+    for r in results:
+        if isinstance(r, Decision) and r.verdict == "ESCALATE":
+            return r
+    for r in results:
+        if isinstance(r, tuple) and r[0] == "same":
+            return r
+    for r in results:
+        if isinstance(r, Decision) and r.verdict == "RFI":
+            return r
+    for r in results:
+        if isinstance(r, tuple) and r[0] == "unknown":
+            return r
+    leads, ev = [], []
+    for r in results:
+        if isinstance(r, Decision):
+            leads.append(_first_sentence(r.reason) + ".")
+            ev += r.evidence
+        else:
+            kind, d, dob, entry, lt = r
+            leads.append("%s gives %s's date of birth as %s, but list entry %s was born on %s." % (
+                d.id, entry["name"], _dob_text(dob), entry["entry_id"], fmt_date(to_date(entry.get("date_of_birth")))))
+            ev += [d.id, entry["entry_id"]] + (tids([lt]) if lt else [])
+    res = D("CLOSE", "LIST_MATCH_DIFFERENT_PARTY", " ".join(leads), ev, "list_multi")
+    res.needs_closer = True
+    return res
 
 
 def listed_decision(c, res):
@@ -356,7 +579,7 @@ def listed_decision(c, res):
         return D("ESCALATE", "ESC_LISTED_PARTY",
                  "%s gives %s's date of birth as %s, the same as list entry %s (%s). The %s %s on %s "
                  "therefore involves the listed party itself." % (
-                     d.id, entry["name"], fmt_date(dob), lid, _first_sentence(entry.get("reason", "")),
+                     d.id, entry["name"], _dob_text(dob), lid, _first_sentence(entry.get("reason", "")),
                      fmt_gbp(amt(t)), "from them" if t and t.get("direction") == "in" else "to them",
                      day(t) if t else ""),
                  [d.id, lid] + tx_ids, "list_name_same")
@@ -366,10 +589,11 @@ def listed_decision(c, res):
 def rule_family_corridor(c):
     if "TM06" not in c.rules:
         return None
-    if c.docs_of(*EXPLAINING_DOCS):
-        return None
     hr = c.high_risk_countries()
     outs = [t for t in c.a_out() if (t.get("counterparty_country") or "").lower() in hr]
+    explaining = c.docs_of(*EXPLAINING_DOCS)
+    if explaining and outs and all(any(close_amount(x, amt(t)) for d in explaining for x in d.amounts) for t in outs):
+        return None  # every payment to the higher-risk country is covered by a document
     ins = [t for t in c.atx if t.get("direction") == "in" and not c.is_own_name(t.get("counterparty_name"))
            and "SALARY" not in (t.get("reference") or "") and t.get("channel") != "cash_deposit"
            and (t.get("reference") or "") not in ("TOP UP",)]
@@ -446,19 +670,37 @@ def rule_conflicting_stories(c):
     outs = c.a_out()
     if not cash:
         return None
-    reason = ("%s in cash was paid in (%s) and %s was sent abroad to %s the next day. The customer "
-              "gave two different sources for the cash, a gift in %s and the sale of a car in %s, and "
-              "nothing on file supports either; the onward payment was described as family support "
-              "for a friend of the family." % (
+    said = " ".join(" ".join(c.customer_lines(d)) for d in chats).lower()
+    gap = None
+    if outs and cash and to_date(cash[0].get("booked_at")) and to_date(outs[0].get("booked_at")):
+        gap = (to_date(outs[0].get("booked_at")) - to_date(cash[0].get("booked_at"))).days
+    when = {0: "the same day", 1: "the next day"}.get(gap, "within %d days" % gap if gap is not None else "")
+    abroad = [t for t in outs if (t.get("counterparty_country") or "United Kingdom") != "United Kingdom"]
+    reason = ("%s in cash was paid in (%s) and %s was sent %s to %s %s. The customer "
+              "gave two different sources for the cash, a gift in %s and the sale of %s in %s, and "
+              "nothing on file supports either%s." % (
                   fmt_gbp(total(cash)), ", ".join(fmt_gbp(amt(t)) for t in cash), fmt_gbp(total(outs)),
-                  join_names(["%s in %s" % (cp(t), t.get("counterparty_country")) for t in outs]),
-                  [d.id for k, d in stories if k == "gift"][0], [d.id for k, d in stories if k == "sale"][0]))
+                  "abroad" if abroad else "on",
+                  join_names(["%s in %s" % (cp(t), t.get("counterparty_country")) for t in outs]), when,
+                  [d.id for k, d in stories if k == "gift"][0], "a car" if re.search(r"\bcar\b", said) else "an item",
+                  [d.id for k, d in stories if k == "sale"][0],
+                  "; the onward payment was described as family support for a friend of the family"
+                  if "friend" in said and "family" in said else ""))
     return D("ESCALATE", "ESC_UNEXPLAINED_FUNDS", reason,
              [d.id for d in chats] + tids(cash) + tids(outs), "conflicting")
 
 
 RESALE_GOODS = ("phone", "handset", "laptop", "tablet", "gold", "jewel", "watch", "consultan",
-                "market access", "advisory", "services", "software licen", "crypto")
+                "market access", "advisory", "software licen", "crypto")
+# words too general to show a business deals in something
+GENERIC_GOODS = {"services", "service", "supplies", "supply", "goods", "products", "product", "equipment",
+                 "materials", "items", "parts", "shipment", "shipments", "order", "orders", "first", "second",
+                 "third", "quarterly", "monthly", "invoice", "general", "trading", "business", "work", "works",
+                 "january", "february", "march", "april", "may", "june", "july", "august", "september",
+                 "october", "november", "december", "sprint", "batch", "delivery", "uk", "abroad", "using"}
+
+
+PAYMENT_TOPIC_RE = re.compile(r"\b(?:payments?|invoices?|shipments?|goods|routed|routing|supplier|destination)\b")
 
 
 def goods_fit_business(c, goods):
@@ -466,15 +708,18 @@ def goods_fit_business(c, goods):
     customer's declared business does not deal in."""
     g = (goods or "").lower()
     biz = (c.business + " " + c.name).lower()
+    if (words(g) - GENERIC_GOODS) & (words(biz) - GENERIC_GOODS):
+        return True  # the business deals in what the invoice is for
     for k in RESALE_GOODS:
-        if k in g and k not in biz:
+        if re.search(r"\b" + re.escape(k), g) and not re.search(r"\b" + re.escape(k), biz):
             return False
     return True
 
 
 def rule_invoice_mismatch(c):
-    notes = [d for d in c.docs_of("staff_note") if EVASIVE_RE.search(d.low)]
     invs = c.docs_of("supplier_invoices", "supplier_invoice")
+    notes = [d for d in c.docs_of("staff_note") if EVASIVE_RE.search(d.low) and c.is_business
+             and (invs or PAYMENT_TOPIC_RE.search(d.low))]
     bad = []
     for d in invs:
         goods = []
@@ -497,9 +742,12 @@ def rule_invoice_mismatch(c):
                   "invoices do not support the %s of payments." % (
                       doc.id, bad[0][1].lower(), c.name, c.business[0].lower() + c.business[1:],
                       fmt_gbp(total(outs))))
-    else:
+    elif doc:
         reason = ("The payments of %s to %s are supported only by %s." % (
-            fmt_gbp(total(outs)), join_names([cp(t) for t in outs]), doc.id if doc else "no invoices"))
+            fmt_gbp(total(outs)), join_names([cp(t) for t in outs]), doc.id))
+    else:
+        reason = ("No invoice on file supports the payments of %s to %s." % (
+            fmt_gbp(total(outs)), join_names([cp(t) for t in outs])))
     if notes:
         reason += (" In %s the director described the payments differently and could not explain "
                    "the mismatch." % notes[0].id)
@@ -536,6 +784,24 @@ def rule_payment_file_addresses(c):
     return None
 
 
+
+
+def rule_customer_listed(c):
+    """The customer themselves matches an internal list entry on name and date of birth (or a company on
+    name and company number). That is a listed party: escalate, never ask them."""
+    for e in c.inst.internal_list.values():
+        if not c.name or norm(e.get("name")) != norm(c.name):
+            continue
+        dob = c.cust.get("date_of_birth")
+        num = (e.get("identifiers") or {}).get("company_number")
+        if (dob and e.get("date_of_birth") == dob) or (num and num == c.cust.get("company_number")):
+            reason = ("%s matches internal list entry %s on both name and %s (%s): %s The customer is a listed "
+                      "party, so the case goes to the MLRO rather than being closed or put to the customer." % (
+                          c.name, e["entry_id"], "date of birth" if dob and e.get("date_of_birth") == dob
+                          else "company number", dob if dob and e.get("date_of_birth") == dob else num,
+                          e.get("reason", "")))
+            return D("ESCALATE", "ESC_LISTED_PARTY", reason, [e["entry_id"]] + tids(c.atx, 4), "customer_listed")
+    return None
 
 
 # ---------------------------------------------------------------------
@@ -587,20 +853,35 @@ def rule_investment_third_party_pattern(c):
     """Investment platform: money from several unrelated people, or redemptions paid to someone else."""
     if c.inst.name != "investment" and "TM08" not in c.rules:
         return None
-    if c.docs_of(*EXPLAINING_DOCS) or c.docs_of("completion_statement", "insurer_letter", "redundancy_letter"):
-        return None
+    # a document on file switches this off only for the flows it covers (by amount and name)
+    docs = c.docs_of(*EXPLAINING_DOCS) + c.docs_of("completion_statement", "insurer_letter", "redundancy_letter",
+                                                    "cancellation_confirmation", "customer_letter", "customer_email",
+                                                    "employment_contract")
+
+    def covered(t):
+        return any(any(close_amount(x, amt(t)) for x in d.amounts) and core_name(cp(t)) in norm(d.text) for d in docs)
+
     ins = [t for t in c.a_in() if _person(t.get("counterparty_name")) and not c.is_own_name(t.get("counterparty_name"))
-           and not str(t.get("channel") or "").startswith("fund_")]
+           and not str(t.get("channel") or "").startswith("fund_") and not covered(t)]
     third_out = [t for t in c.a_out() if not c.is_own_name(t.get("counterparty_name"))
-                 and not str(t.get("channel") or "").startswith("fund_")]
+                 and not str(t.get("channel") or "").startswith("fund_") and not covered(t)]
     red = [t for t in c.atx if t.get("channel") == "fund_redemption"]
+    if "TM10" in c.rules and red and not third_out:
+        # the sale proceeds may leave in a withdrawal the alert did not list: follow them for ten days
+        rd = to_date(red[0].get("booked_at"))
+        third_out = [t for t in c.txs if t.get("direction") == "out" and rd and to_date(t.get("booked_at"))
+                     and 0 <= (to_date(t.get("booked_at")) - rd).days <= 10 and amt(t) >= 0.5 * amt(red[0])
+                     and not c.is_own_name(t.get("counterparty_name"))
+                     and not str(t.get("channel") or "").startswith("fund_") and not covered(t)]
     ch = c.chats()
     if "TM10" in c.rules and red and third_out:
-        reason = ("Fund units bought with money from %s were sold back within days and the %s proceeds were paid "
+        held = (c.by_rule["TM10"][0].get("measured") or {}).get("held_days")
+        reason = ("Fund units bought with %s were sold back %s and the %s proceeds were paid "
                   "to %s, not to the customer. Nothing on file explains why someone else receives the proceeds, "
                   "which is how fund purchases and early redemptions are used to move other people's money." % (
-                      join_names([cp(t) for t in ins]) or "a third party", fmt_gbp(total(red)),
-                      join_names([cp(t) for t in third_out])))
+                      ("money from " + join_names([cp(t) for t in ins])) if ins else "the customer's money",
+                      ("%s days after purchase" % held) if held is not None else "early",
+                      fmt_gbp(total(red)), join_names([cp(t) for t in third_out])))
         return D("ESCALATE", "ESC_EARLY_REDEMPTION", reason,
                  [d.id for d in ch] + tids(ins) + tids(red) + tids(third_out), "early_redemption_pattern")
     if len({cp(t) for t in ins}) >= 2:
@@ -640,7 +921,7 @@ def rule_cash_sent_abroad_pattern(c):
              [d.id for d in c.chats()] + tids(cash) + tids(abroad), "cash_abroad_pattern")
 
 
-ESCALATION_RULES = [rule_mule, rule_device, rule_structuring_note, rule_dissolved_payer,
+ESCALATION_RULES = [rule_customer_listed, rule_mule, rule_device, rule_structuring_note, rule_dissolved_payer,
                     rule_pass_through, rule_family_corridor, rule_investment_third_party,
                     rule_conflicting_stories, rule_invoice_mismatch, rule_payment_file_addresses,
                     rule_mule_pattern, rule_investment_third_party_pattern, rule_cash_sent_abroad_pattern]

@@ -36,7 +36,9 @@ Each case is one customer, or at the payments firm one held payment. The case ge
    - early fund sales paid out to someone other than the customer;
    - cash paid in and sent abroad within days, with nothing explaining the cash.
 
-   With every chat and fraud report made unreadable, every development case keeps its verdict.
+   With every chat and fraud report made unreadable, every development escalation keeps its verdict (39 bank closes for returned cash become RFIs, the safe direction).
+
+   Keyword checks need the money to agree: a shared device escalates only with other people's money moved straight out; a threshold note only when the customer asked (not denied, not staff explaining) and the alerted activity really sits just under the threshold; a crypto chat only when it describes passing other people's money on; goods words only when the invoice shares no real word with the business.
 2. **Internal list (TM22).** The decision follows the policy:
    - **Company officer match.** The engine checks the officer register and the significant-control register at the payment date. If the listed person still controlled the counterparty, even after resigning as director, it escalates with ESC_LISTED_PARTY. If they had left before the payment and an invoice matches, it closes.
    - **Address-only match.** If the register shows different people run the business and the unit differs, it closes with LIST_MATCH_DIFFERENT_PARTY.
@@ -49,7 +51,8 @@ Each case is one customer, or at the payments firm one held payment. The case ge
    - **Own accounts:** an account counts as the customer's own only when a statement on file shows they hold it. If the TM01 multiple is 5 times the declared income or volume or more, the verdict is RFI_UPDATED_PROFILE, as the policy says.
    - **Earlier reviews:** they are cited as context and never treated as covering new or larger activity. Cash paid back in after a reviewed withdrawal closes only when the bank's own records show a withdrawal of exactly the same amount.
    - **Payments abroad on someone else's behalf** (a relative's hospital bill): the money must go to the payee the bill names (otherwise ESC_INVOICE_MISMATCH); it must be the only payment to that payee or that higher-risk country (otherwise ESC_HIGH_RISK_CORRIDOR); no third party may have paid the customer a similar sum in the week before (otherwise ESC_THIRD_PARTY_FUNDING); and the beneficiary must share the customer's surname (otherwise RFI_PURPOSE_DOCUMENTS, asking for proof of the relationship). A beneficiary with the customer's own full name is allowed, since a parent can share both names.
-4. **Final checks on every close** (`engine/guards.py`). A close rule usually proves one fact, such as a document matching one payment. Before any CLOSE is written, the rest of the case is checked, and the close is blocked if:
+4. **Final checks on every close** (`engine/guards.py`). A close rule usually proves one fact, such as a document matching one payment. Before any CLOSE is written, the rest of the case is checked. Every check runs and the most serious result wins (ESCALATE over RFI). The close is blocked if:
+   - **An alert is left unexplained:** every alerted transaction must be among those the close relies on, except everyday flows (card, direct debits, standing orders, salary, fund buys and sells, the customer's own routine top-ups or funding, amounts under £250, cash machine withdrawals under £500). Unexplained money to or from an undeclared higher-risk country escalates; otherwise RFI.
    - **Money moved on:** money a document explains was sent within three days to a new payee nothing on file explains (ESC_UNEXPLAINED_FUNDS), or within a week to anyone unexplained (RFI, or escalate if it goes to a higher-risk country). Buying fund units counts as the money staying.
    - **Payer not named:** a document explaining money in does not name who paid it (RFI).
    - **Dates don't fit:** the deciding document is dated more than a month after the money moved, more than a year before it, or after the case was opened (RFI_PURPOSE_DOCUMENTS).
@@ -63,6 +66,10 @@ Each case is one customer, or at the payments firm one held payment. The case ge
 5. **Otherwise RFI.** The engine asks for the one document that would settle the case, such as the solicitor's letter for an estate payment, the booking for a group trip, the loan agreement and invoice for a car, or a statement for an own-name account. The reason says exactly what to ask for.
 
 Whatever happens, every case gets a line. If a rule fails unexpectedly the case becomes an RFI, never a silent omission.
+
+## Who was paid, and the internal list
+
+Documents are matched on payee as well as amount: payment-file rows by name and amount (an empty file explains nothing), contract stages and supplier invoices by supplier and pay-to account (a different payee escalates as ESC_INVOICE_MISMATCH), ISA refunds must go back to the customer's own account, gift letters must name the customer, and the £10,000 held-payment rule accepts only an invoice or contract naming the payee. Own-account transfers must name an account a statement shows. Every TM22 alert is checked; a date of birth counts only next to the person's name; a document showing the same person outweighs one showing a different one; a register birth date that differs clears an officer match (as in the brief's example); a customer who is themselves on the list escalates on every case.
 
 ## Reasons and evidence
 

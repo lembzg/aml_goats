@@ -33,9 +33,24 @@ planting its trap into a copy of a real closed case (system/tests).
 import re
 from datetime import timedelta
 
-from context import words
+from context import needs_explaining, payee_ok, words
 from data import close_amount, fmt_date, fmt_gbp, norm, to_date
 from rules import D, amt, cp, day, join_names, tids, total
+
+# documents that can show what a payment out was for (an invoice or a contract)
+INVOICE_DOC_TYPES = ("invoice", "supplier_invoice", "supplier_invoices", "dealer_invoice", "hospital_invoice",
+                     "carrier_invoice", "freight_invoices", "contract_schedule", "supply_contract",
+                     "consulting_contract", "payment_file", "credit_note")
+# what the customer says, or what staff wrote down, is not a record of the payment itself
+HEARSAY_DOC_TYPES = ("support_chat", "contact_note", "staff_note")
+
+
+def invoice_covers(c, t):
+    """An invoice or contract on file shows this payment's amount and names who it is paid to."""
+    for doc in c.docs:
+        if doc.type in INVOICE_DOC_TYPES and any(close_amount(x, amt(t)) for x in doc.amounts) and payee_ok(doc, t):
+            return doc
+    return None
 
 ROUTINE = ("card", "direct_debit", "standing_order")
 
@@ -52,8 +67,11 @@ def _when(t):
 
 
 def _doc_amounts(c):
+    """Amounts in the documents on file, leaving out chats and staff notes, which only report what someone said."""
     out = set()
     for d in c.docs:
+        if d.type in HEARSAY_DOC_TYPES:
+            continue
         for x in d.amounts:
             out.add(round(x, 2))
     return out
@@ -200,11 +218,9 @@ def large_payments(c, d):
     if not m:
         return None
     limit = float(m.group(1).replace(",", ""))
-    covered = _doc_amounts(c)
-    cited = set(d.evidence)
     uncovered = [t for t in c.atx if t.get("direction") == "out" and amt(t) >= limit
                  and not c.is_own_name(t.get("counterparty_name"))
-                 and round(amt(t), 2) not in covered]
+                 and not invoice_covers(c, t)]
     if not uncovered:
         return None
     new, known = [], []
@@ -396,29 +412,83 @@ def g_held_payment_documented(c, d):
     t = c.held
     if not t or amt(t) < 10000 or c.is_own_name(t.get("counterparty_name")):
         return None
-    if any(any(abs(x - amt(t)) <= 0.011 for x in doc.amounts) for doc in c.docs):
+    if invoice_covers(c, t):
         return None
     return D("RFI", "RFI_PURPOSE_DOCUMENTS",
              "The held payment of %s to %s on %s is £10,000 or more and goes to someone other than the "
-             "client, so policy requires an invoice or contract on file before it is released, and none on "
-             "file shows this amount. Ask %s for the invoice or contract behind this payment." % (
-                 fmt_gbp(amt(t)), cp(t), day(t), c.name),
+             "client, so policy requires an invoice or contract on file before it is released, and no invoice "
+             "or contract on file shows this amount and payee. Ask %s for the invoice or contract behind this "
+             "payment." % (fmt_gbp(amt(t)), cp(t), day(t), c.name),
              tids([t]) + d.evidence, "guard_held_payment")
 
+
+def _desc(t):
+    if t.get("channel") in ("cash_deposit", "cash_topup") and not t.get("counterparty_name"):
+        return "the %s cash paid in on %s" % (fmt_gbp(amt(t)), day(t))
+    return "%s %s %s on %s" % (fmt_gbp(amt(t)), "from" if t.get("direction") == "in" else "to", cp(t), day(t))
+
+
+def g_all_alerts_explained(c, d):
+    """A case closes only when every alert in it is explained. Every alerted transaction must be among the
+    ones the close relies on, unless it is everyday activity that needs no document (card spending, direct
+    debits, standing orders, salary, fund purchases and sales, the customer's own routine top-ups or
+    funding, or less than £250)."""
+    cited = set(d.evidence)
+    left = [t for t in c.atx if t["transaction_id"] not in cited and needs_explaining(c, t)]
+    if not left:
+        return None
+    docs = [e for e in d.evidence if e not in c.inst.tx][:2]
+    hr = c.high_risk_countries()
+    declared = {x.lower() for x in (c.declared.get("expected_countries") or [])}
+    risky = [t for t in left if (t.get("counterparty_country") or "").lower() in hr
+             and (t.get("counterparty_country") or "").lower() not in declared]
+    shown = "; ".join(_desc(t) for t in left[:3]) + (" and %d more" % (len(left) - 3) if len(left) > 3 else "")
+    lead = ("%s explain%s part of the alerted activity, but not %s." % (
+        " and ".join(docs) if docs else "The documents on file", "" if len(docs) > 1 else "s", shown))
+    if risky:
+        ctry = risky[0].get("counterparty_country")
+        dirs = {t.get("direction") for t in risky}
+        verb = "went to" if dirs == {"out"} else ("came from" if dirs == {"in"} else "moved to and from")
+        return D("ESCALATE", "ESC_HIGH_RISK_CORRIDOR",
+                 lead + " %s %s %s, a higher-risk country the customer did not declare, and nothing on file "
+                 "explains it." % (fmt_gbp(total(risky)), verb, ctry),
+                 tids(risky) + tids([t for t in left if t not in risky], 3) + d.evidence, d.tag + "|unexplained_hr")
+    if all(t.get("direction") == "in" for t in left):
+        code, ask = "RFI_SOURCE_OF_FUNDS", "where this money came from, with documents that show it"
+    else:
+        code, ask = "RFI_PURPOSE_DOCUMENTS", "what these payments were for, with the invoices or contracts behind them"
+    return D("RFI", code, lead + " A case can only be closed when every alert in it is explained. Ask %s %s." % (
+        c.name or "the customer", ask), tids(left, 6) + d.evidence, d.tag + "|unexplained")
 
 
 BLOCKING = [moved_on, returned_cash, payer_named, dates_fit, one_off_repeats,
             g_customer_on_list, g_held_payment_documented, g_documents_in_customer_name, g_payer_in_documents,
-            g_money_moved_on, g_documents_after_alert,
-            large_payments]  # last: may only add a sentence about known suppliers
+            g_money_moved_on, g_documents_after_alert]
+SEVERITY = {"CLOSE": 0, "RFI": 1, "ESCALATE": 2}
 
 
 def check_close(c, d):
-    """Run every check on a CLOSE. Returns the decision to write."""
+    """Run every check on a CLOSE and return the most serious result (ESCALATE over RFI); among equally
+    serious results the first check in BLOCKING wins. With no objection, the close stands."""
     if d.verdict != "CLOSE":
         return d
+    found = []
     for chk in BLOCKING:
         res = chk(c, d)
         if res is not None:
-            return res
-    return d
+            found.append(res)
+    # large payments: blocks a new payee with no invoice, or adds a sentence (and evidence) about
+    # established suppliers; it runs before the coverage check so those payments count as explained
+    res = large_payments(c, d)
+    if res is not None:
+        found.append(res)
+    res = g_all_alerts_explained(c, d)
+    if res is not None:
+        found.append(res)
+    if not found:
+        return d
+    best = found[0]
+    for r in found[1:]:
+        if SEVERITY[r.verdict] > SEVERITY[best.verdict]:
+            best = r
+    return best

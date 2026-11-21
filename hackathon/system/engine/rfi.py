@@ -1,5 +1,7 @@
 """Requests for information: nothing suspicious, but one document would settle it."""
-from data import fmt_gbp
+import re
+
+from data import fmt_gbp, to_date
 from rules import D, amt, cp, day, join_names, tids, total
 
 
@@ -62,10 +64,13 @@ def rule_rfi(c, listed=None):
                    "Ask the customer for the insurer's settlement letter for this claim.", tids([t]), "rfi_claim")
     if "LOAN ADVANCE" in ref:
         o = outs[0] if outs else None
-        return say("RFI_PURPOSE_DOCUMENTS",
-                   "A %s loan advance from %s on %s was paid out to %s the next day%s." % (
-                       fmt_gbp(amt(t)), cp(t), when, cp(o) if o else "another party",
-                       (" (%s, reference %s)" % (fmt_gbp(amt(o)), o.get("reference"))) if o else ""),
+        gap = (to_date(o.get("booked_at")) - to_date(t.get("booked_at"))).days if o else None
+        when_out = ("the same day" if gap == 0 else "the next day" if gap == 1 else
+                    "%d days later" % gap if gap is not None and gap > 1 else "")
+        what = ("A %s loan advance from %s on %s was paid out to %s %s (%s, reference %s)." % (
+            fmt_gbp(amt(t)), cp(t), when, cp(o), when_out, fmt_gbp(amt(o)), o.get("reference"))
+            if o and when_out else "A %s loan advance from %s arrived on %s." % (fmt_gbp(amt(t)), cp(t), when))
+        return say("RFI_PURPOSE_DOCUMENTS", what,
                    "Ask the customer for the loan agreement and the invoice for what was bought.",
                    tids([t] + ([o] if o else [])), "rfi_loan")
     if "DEPOSIT RETURN" in ref or any("HOLDING DEPOSIT" in _ref(x) for x in outs):
@@ -80,9 +85,17 @@ def rule_rfi(c, listed=None):
     if trip or any("BOOKING" in _ref(x) for x in outs) and "TM04" in c.rules:
         o = [x for x in outs if "BOOKING" in _ref(x)]
         payers = [x for x in c.a_in() if not _ref(x).startswith("SALARY")]
+        others = [x for x in payers if not c.is_own_name(x.get("counterparty_name"))] or payers
+        amounts = sorted({round(amt(x), 2) for x in others})
+        if len(amounts) == 1:
+            shape = "small, equal amounts" if amounts[0] <= 1000 else "equal amounts of %s" % fmt_gbp(amounts[0])
+        else:
+            shape = "amounts of %s to %s" % (fmt_gbp(amounts[0]), fmt_gbp(amounts[-1]))
+        if trip:
+            shape += " with trip references"
         return say("RFI_PURPOSE_DOCUMENTS",
-                   "%d people paid %s small, equal amounts with trip references (%s in total) and %s was paid "
-                   "to %s%s." % (len({cp(x) for x in payers}), c.name, fmt_gbp(total(payers)),
+                   "%d people paid %s %s (%s in total) and %s was paid "
+                   "to %s%s." % (len({cp(x) for x in payers}), c.name, shape, fmt_gbp(total(payers)),
                                  fmt_gbp(amt(o[0])) if o else "a payment", cp(o[0]) if o else "a travel company",
                                  (" on %s, reference %s" % (day(o[0]), o[0].get("reference"))) if o else ""),
                    "Ask the customer for the group booking confirmation showing the traveller list and price per person.",
@@ -90,10 +103,13 @@ def rule_rfi(c, listed=None):
     if c.rules == {"TM10"} or ("TM10" in c.rules and not ins):
         sell = [x for x in c.atx if x.get("channel") == "fund_redemption"]
         a = c.by_rule["TM10"][0]
+        own_w = [x for x in c.txs if sell and x.get("direction") == "out" and c.is_own_name(x.get("counterparty_name"))
+                 and abs(amt(x) - amt(sell[0])) <= 0.011]
         return say("RFI_PURPOSE_DOCUMENTS",
-                   "Fund units were sold back %s days after purchase (%s) and the proceeds withdrawn to "
-                   "the customer's own account." % ((a.get("measured") or {}).get("held_days", "a few"),
-                                                    fmt_gbp(amt(sell[0])) if sell else ""),
+                   "Fund units were sold back %s days after purchase (%s)%s." % (
+                       (a.get("measured") or {}).get("held_days", "a few"),
+                       fmt_gbp(amt(sell[0])) if sell else "",
+                       " and the proceeds withdrawn to the customer's own account" if own_w else ""),
                    "Ask the customer why they sold early and for any document showing what the money is needed for.",
                    tids(c.atx), "rfi_redemption")
     if "ISA" in ref and "TM08" in c.rules and not c.is_own_name(cp(t)):
@@ -115,11 +131,13 @@ def rule_rfi(c, listed=None):
                    tids([t]), "rfi_own_name")
     if t.get("channel") in ("cash_deposit", "cash_topup"):
         ch = c.chats()
+        sale = [d for d in ch if re.search(r"\b(sell|selling|sold|sale)\b", " ".join(c.customer_lines(d)).lower())]
         return say("RFI_SOURCE_OF_FUNDS",
                    "The customer paid in %s in cash on %s%s." % (
                        fmt_gbp(amt(t)), when,
-                       (" and said in %s it came from a private sale" % ch[0].id) if ch else ""),
-                   "Ask the customer for proof of the sale, such as a receipt or the buyer's details.",
+                       (" and said in %s it came from a private sale" % sale[0].id) if sale else ""),
+                   "Ask the customer for proof of the sale, such as a receipt or the buyer's details." if sale else
+                   "Ask the customer for evidence of where the cash came from.",
                    [x.id for x in ch] + tids([t]), "rfi_cash")
     if "ADVANCE" in ref:
         return say("RFI_COUNTERPARTY_DETAILS",
@@ -134,15 +152,27 @@ def rule_rfi(c, listed=None):
                    "Ask the client for the freight invoices it issued to these payers.",
                    tids(pays + outs[:1]), "rfi_freight")
     if "TM03" in c.rules:
+        dates = [to_date(x.get("booked_at")) for x in outs if x.get("booked_at")]
+        span = (max(dates) - min(dates)).days + 1 if dates else None
+        staged = bool(outs) and all("STAGE" in _ref(x) for x in outs)
         return say("RFI_PURPOSE_DOCUMENTS",
-                   "%d payments to %s each just under £10,000 (%s in total) were made within 10 days, "
-                   "with staged references." % (len(outs), cp(outs[0]) if outs else "", fmt_gbp(total(outs))),
+                   "%d payments to %s each just under £10,000 (%s in total) were made%s%s." % (
+                       len(outs), cp(outs[0]) if outs else "", fmt_gbp(total(outs)),
+                       (" within 10 days" if span <= 10 else " over %d days" % span) if span else "",
+                       ", with staged references" if staged else ""),
                    "Ask the client for the contract or invoice schedule covering these stage payments.",
                    tids(outs), "rfi_stages")
     if "TM04" in c.rules:
+        m = c.by_rule["TM04"][0].get("measured") or {}
+        who = "client" if c.inst.name == "payments_fx" else "customer"
+        limit, days = m.get("limit"), m.get("window_days")
+        if m.get("direction") == "incoming":
+            what = "More than %s different people or companies paid the %s's account in %s days" % (limit, who, days)
+        else:
+            what = "The %s paid more than %s different %s in %s days" % (
+                who, limit, "beneficiaries" if c.inst.name == "payments_fx" else "people or companies", days)
         return say("RFI_BUSINESS_RECORDS",
-                   "The client paid more than 25 different beneficiaries in 30 days (%s alerted)." % fmt_gbp(
-                       (c.by_rule["TM04"][0].get("measured") or {}).get("total_gbp") or total(outs)),
+                   "%s (%s alerted)." % (what, fmt_gbp(m.get("total_gbp") or total(outs))),
                    "Ask the client for the payment file or contractor list behind the payments.",
                    tids(outs, 6), "rfi_many_payees")
     if "TM07" in c.rules:

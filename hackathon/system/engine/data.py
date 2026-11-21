@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import sys
 from collections import defaultdict
 from datetime import date, datetime
 
@@ -121,55 +122,88 @@ class Doc:
         return self.text.lower()
 
 
+def _warn(msg):
+    sys.stderr.write("warning: %s\n" % msg)
+
+
 class Institution:
     def __init__(self, folder):
         self.folder = folder
         self.name = os.path.basename(os.path.normpath(folder))
-        self.cases = self._jsonl("cases.jsonl")
-        self.alerts = {a["alert_id"]: a for a in self._jsonl("alerts.jsonl")}
-        self.customers = {c["customer_id"]: c for c in self._jsonl("customers.jsonl")}
+        self.root = os.path.realpath(folder)
+        self.cases = self._jsonl("cases.jsonl", ("case_id",))
+        self.alerts = {a["alert_id"]: a for a in self._jsonl("alerts.jsonl", ("alert_id",))}
+        self.customers = {c["customer_id"]: c for c in self._jsonl("customers.jsonl", ("customer_id",))}
         self.tx = {}
         self.tx_by_cust = defaultdict(list)
-        for t in self._jsonl("transactions.jsonl"):
+        for t in self._jsonl("transactions.jsonl", ("transaction_id", "customer_id")):
             self.tx[t["transaction_id"]] = t
             self.tx_by_cust[t["customer_id"]].append(t)
         for lst in self.tx_by_cust.values():
             lst.sort(key=lambda t: (t.get("booked_at") or "", t["transaction_id"]))
         self.docs_by_cust = defaultdict(list)
-        for meta in self._jsonl("evidence.jsonl"):
-            path = os.path.join(folder, meta.get("file") or ("evidence/%s.md" % meta["doc_id"]))
-            try:
-                with open(path, encoding="utf-8") as fh:
-                    text = fh.read()
-            except OSError:
-                text = ""
+        for meta in self._jsonl("evidence.jsonl", ("doc_id", "customer_id")):
+            text = self._read_evidence(meta)
             self.docs_by_cust[meta["customer_id"]].append(Doc(meta, text))
         for lst in self.docs_by_cust.values():
             lst.sort(key=lambda d: d.id)
         self.reviews_by_cust = defaultdict(list)
-        for r in self._jsonl("previous_reviews.jsonl"):
+        for r in self._jsonl("previous_reviews.jsonl", ("customer_id",)):
             self.reviews_by_cust[r["customer_id"]].append(r)
-        self.internal_list = {e["entry_id"]: e for e in self._jsonl("internal_list.jsonl")}
+        self.internal_list = {e["entry_id"]: e for e in self._jsonl("internal_list.jsonl", ("entry_id",))}
         self.policy = self._read("POLICY.md")
+        if not self.policy:
+            _warn("no POLICY.md in %s: policy settings such as the higher-risk countries are unavailable" % folder)
+        elif not re.search(r"Higher-risk countries[^:]*:", self.policy):
+            _warn("POLICY.md in %s does not list higher-risk countries" % folder)
+
+    def _read_evidence(self, meta):
+        """A document's text. Only files inside the institution folder are read."""
+        rel = meta.get("file") or ("evidence/%s.md" % meta["doc_id"])
+        path = os.path.realpath(os.path.join(self.folder, rel))
+        try:
+            inside = os.path.commonpath([path, self.root]) == self.root
+        except ValueError:
+            inside = False
+        if not inside:
+            _warn("document %s points outside the institution folder; ignored" % meta["doc_id"])
+            return ""
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read()
+        except (OSError, UnicodeDecodeError):
+            _warn("document %s could not be read" % meta["doc_id"])
+            return ""
 
     def _read(self, name):
         try:
             with open(os.path.join(self.folder, name), encoding="utf-8") as fh:
                 return fh.read()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return ""
 
-    def _jsonl(self, name):
+    def _jsonl(self, name, required=()):
+        """Rows of a JSONL file. Lines that are not JSON objects, or lack a required field, are skipped with
+        a warning (a skipped case is left out of the output, which counts as an escalation)."""
         out = []
         path = os.path.join(self.folder, name)
         if not os.path.exists(path):
             return out
+        bad = 0
         with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
-                if line:
-                    try:
-                        out.append(json.loads(line))
-                    except ValueError:
-                        pass
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    bad += 1
+                    continue
+                if not isinstance(row, dict) or any(not row.get(k) for k in required):
+                    bad += 1
+                    continue
+                out.append(row)
+        if bad:
+            _warn("%d unreadable line(s) skipped in %s" % (bad, path))
         return out

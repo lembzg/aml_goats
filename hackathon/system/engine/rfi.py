@@ -90,10 +90,13 @@ def rule_rfi(c, listed=None):
     if c.rules == {"TM10"} or ("TM10" in c.rules and not ins):
         sell = [x for x in c.atx if x.get("channel") == "fund_redemption"]
         a = c.by_rule["TM10"][0]
+        own_w = [x for x in c.txs if sell and x.get("direction") == "out" and c.is_own_name(x.get("counterparty_name"))
+                 and abs(amt(x) - amt(sell[0])) <= 0.011]
         return say("RFI_PURPOSE_DOCUMENTS",
-                   "Fund units were sold back %s days after purchase (%s) and the proceeds withdrawn to "
-                   "the customer's own account." % ((a.get("measured") or {}).get("held_days", "a few"),
-                                                    fmt_gbp(amt(sell[0])) if sell else ""),
+                   "Fund units were sold back %s days after purchase (%s)%s." % (
+                       (a.get("measured") or {}).get("held_days", "a few"),
+                       fmt_gbp(amt(sell[0])) if sell else "",
+                       " and the proceeds withdrawn to the customer's own account" if own_w else ""),
                    "Ask the customer why they sold early and for any document showing what the money is needed for.",
                    tids(c.atx), "rfi_redemption")
     if "ISA" in ref and "TM08" in c.rules and not c.is_own_name(cp(t)):
